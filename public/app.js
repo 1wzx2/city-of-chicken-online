@@ -4,14 +4,14 @@ const ROLES = [
   { id: "lazi", no: 1, short: "辣子", name: "辣子鸡丁", desc: "全局只能使用一次，本轮同城其他玩家兵力 -3。" },
   { id: "zha", no: 2, short: "炸鸡", name: "炸鸡桶", desc: "前四轮只能使用一次，炸一城，按摧毁兵数得分。" },
   { id: "kele", no: 3, short: "可乐", name: "可乐鸡翅", desc: "全局 3 次，第五/六轮合计 1 次；交换两个城池实际价值，差值不能超过 6。" },
-  { id: "nongtang", no: 4, short: "浓汤", name: "浓鸡汤", desc: "查看一名玩家放置后再放置。" },
+  { id: "nongtang", no: 4, short: "浓汤", name: "浓鸡汤", desc: "先锁定一名玩家，等对方提交后查看其出兵，再提交自己的出兵。" },
   { id: "zuozong", no: 5, short: "左宗", name: "左宗鸡", desc: "猜中泡椒偷分前本轮倒数三名之一 +10。" },
   { id: "huang", no: 6, short: "黄焖", name: "黄焖鸡米饭", desc: "全局 3 次，第五/六轮合计 1 次；指定城池胜者翻倍，失败进城者扣分。" },
   { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "全局 3 次，第五/六轮合计 1 次；与一名玩家合作，双方各 17 兵，收益平分。" },
   { id: "paojiao", no: 8, short: "泡椒", name: "泡椒鸡爪", desc: "泡椒偷分前总榜唯一倒一时偷分，后两轮翻倍。" },
   { id: "dapan", no: 9, short: "大盘", name: "大盘鸡", desc: "全局 3 次，第五/六轮合计 1 次；额外 X 兵，未帮助得分兵扣分。" },
   { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；计算前移动一枚军队。" },
-  { id: "baizhan", no: 11, short: "白斩", name: "白斩鸡拼盘", desc: "预测泡椒偷分前累计排名，每对一人 +2。" },
+  { id: "baizhan", no: 11, short: "白斩", name: "白斩鸡拼盘", desc: "预测泡椒偷分前总榜名次，每猜对一人 +2。" },
   { id: "koushui", no: 12, short: "口水", name: "口水鸡", desc: "军队可分成 0.5 使用。" },
 ];
 const ROLE_BY_ID = Object.fromEntries(ROLES.map((role) => [role.id, role]));
@@ -33,6 +33,7 @@ const state = {
   placements: makeEmptyPlacements(16),
   skill: {},
   activeTab: "ranking",
+  autoRejoinTried: false,
 };
 
 const app = document.getElementById("app");
@@ -40,6 +41,7 @@ const connectionState = document.getElementById("connectionState");
 
 socket.on("connect", () => {
   connectionState.textContent = "已连接";
+  tryAutoRejoin();
 });
 
 socket.on("disconnect", () => {
@@ -60,6 +62,7 @@ socket.on("roomState", (room) => {
     state.placements = makeEmptyPlacements(room.cityCount);
     state.skill = defaultSkill(me ? me.roleId : "");
   }
+  syncNongtangTarget();
   render();
 });
 
@@ -78,11 +81,19 @@ function render() {
 }
 
 function renderLobby() {
+  const hasSavedSession = Boolean(state.playerId && state.playerName);
   app.className = "page";
   app.innerHTML = `
     <section class="panel lobby">
       <h2>进入在线房间</h2>
       <p class="muted">同一局的人打开同一个服务器地址。房主创建房间，其他人用 6 位房间码加入。</p>
+      ${hasSavedSession ? `
+        <div class="resume-box">
+          <strong>检测到上次身份：${escapeHtml(state.playerName)}</strong>
+          <span class="muted">${state.roomCode ? `上次房间：${escapeHtml(state.roomCode)}` : "可以尝试按上次身份找回房间。"}</span>
+          <button id="resumeRoomBtn" class="secondary">恢复上次房间</button>
+        </div>
+      ` : ""}
       <div class="form-grid">
         <label class="full">
           <span>昵称</span>
@@ -115,7 +126,6 @@ function renderRoom() {
         </div>
         <p class="muted">第 ${room.round} 轮，${submitted}/${room.players.length} 已提交。本机玩家：${escapeHtml(me ? me.name : "未知")}。</p>
       </section>
-      ${renderLiveLeaderboard()}
       ${isHost ? renderHostPanel() : ""}
       <section class="panel">
         <h2>玩家</h2>
@@ -127,6 +137,7 @@ function renderRoom() {
       </section>
     </aside>
     <section class="main">
+      ${renderLiveLeaderboard()}
       <section class="panel">
         <h2>本轮投兵</h2>
         ${renderArmySummary()}
@@ -138,7 +149,7 @@ function renderRoom() {
       </section>
       <section class="panel">
         <div class="actions">
-          <button id="submitBtn">提交本轮</button>
+          <button id="submitBtn" ${canSubmitNow(role) ? "" : "disabled"}>提交本轮</button>
           <span class="muted">可重复提交，后一次覆盖前一次。结算前别人看不到你的投兵。</span>
         </div>
       </section>
@@ -237,7 +248,7 @@ function renderSkillForm(role) {
       <label>城池 A<select data-skill="cityA">${cityOptionsHtml(state.skill.cityA || 1)}</select></label>
       <label>城池 B<select data-skill="cityB">${cityOptionsHtml(state.skill.cityB || 2)}</select></label>
     </div>`;
-  if (role.id === "nongtang") return `<label>查看对象<select data-skill="targetId">${markSelected(playerOptions, state.skill.targetId)}</select></label>`;
+  if (role.id === "nongtang") return renderNongtangForm(playerOptions);
   if (role.id === "zuozong") return `<label>猜本轮倒数对象<select data-skill="targetId">${markSelected(playerOptions, state.skill.targetId)}</select></label>`;
   if (role.id === "huang") return `
     ${usage}
@@ -259,7 +270,7 @@ function renderSkillForm(role) {
       <label>额外兵数 X<input data-skill="extra" type="number" min="0" max="12" value="${formatInput(state.skill.extra || 0)}" /></label>
     </div>`;
   if (role.id === "jiangyou") return `${usage}<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；投兵表填写移动后的结果</label>`;
-  if (role.id === "baizhan") return `<label>预测正确人数<input data-skill="correct" type="number" min="0" max="${state.room.players.length}" value="${formatInput(state.skill.correct || 0)}" /></label>`;
+  if (role.id === "baizhan") return renderBaizhanForm();
   if (role.id === "koushui") return `<p class="muted">口水鸡可用 0.5 兵，投兵表支持小数。</p>`;
   return `<p class="muted">无技能输入。</p>`;
 }
@@ -271,6 +282,57 @@ function renderSkillUsage(role) {
   if (usage.lateMax) parts.push(`第五/六轮 ${usage.lateUsed}/${usage.lateMax}`);
   const roundText = usage.roundAllowed ? "" : "当前轮次不可使用";
   return `<div class="skill-usage ${usage.roundAllowed ? "" : "bad"}">${escapeHtml(usage.rule)} · ${parts.join(" · ")}${roundText ? ` · ${roundText}` : ""}</div>`;
+}
+
+function renderNongtangForm(playerOptions) {
+  const view = state.room.nongtangView || {};
+  if (!view.targetId) {
+    return `
+      <div class="skill-form">
+        <label>先选择查看对象<select data-skill="targetId">${markSelected(playerOptions, state.skill.targetId)}</select></label>
+        <button id="lockNongtangBtn" class="secondary">锁定查看对象</button>
+        <p class="muted">锁定后需要等待对方提交。看到对方出兵后，再填写自己的出兵并提交。</p>
+      </div>
+    `;
+  }
+
+  const status = view.targetSubmitted
+    ? `已看到 ${escapeHtml(view.targetName)} 的出兵，可以提交自己的出兵。`
+    : `等待 ${escapeHtml(view.targetName)} 提交。对方提交后这里会自动显示出兵。`;
+  return `
+    <div class="skill-form">
+      <div class="skill-usage ${view.targetSubmitted ? "" : "bad"}">查看对象：${escapeHtml(view.targetName)} · ${status}</div>
+      ${view.targetSubmitted ? renderViewedPlacements(view.placements) : ""}
+    </div>
+  `;
+}
+
+function renderBaizhanForm() {
+  const predictions = state.skill.predictions || {};
+  const max = state.room.players.length;
+  const rows = state.room.players.map((player) => `
+    <label class="prediction-row">
+      <span>${escapeHtml(player.name)}${player.roleShort ? `（${escapeHtml(player.roleShort)}）` : ""}</span>
+      <input data-skill-rank="${player.id}" type="number" min="1" max="${max}" step="1" value="${predictions[player.id] === undefined || predictions[player.id] === "" ? "" : formatInput(predictions[player.id])}" />
+    </label>
+  `).join("");
+  return `
+    <div class="skill-form">
+      <p class="muted">预测本轮泡椒、左宗、白斩结算前的总榜名次。并列可以填相同名次。</p>
+      <div class="prediction-grid">${rows}</div>
+    </div>
+  `;
+}
+
+function renderViewedPlacements(placements) {
+  const rows = Array.from({ length: state.room.cityCount }, (_, index) => state.room.cityCount - index)
+    .map((city) => `
+      <div class="viewed-city">
+        <span>${city} 城</span>
+        <strong>${fmt(placements && placements[city] ? placements[city] : 0)}</strong>
+      </div>
+    `).join("");
+  return `<div class="viewed-grid">${rows}</div>`;
 }
 
 function renderResults(result) {
@@ -323,11 +385,13 @@ function handleClick(event) {
   const id = event.target.id;
   if (id === "createRoomBtn") createRoom();
   if (id === "joinRoomBtn") joinRoom();
+  if (id === "resumeRoomBtn") resumeRoom(true);
   if (id === "leaveBtn") leaveRoom();
   if (id === "assignRolesBtn") emitAction("assignRoles");
   if (id === "settleBtn") emitAction("settleRound");
   if (id === "nextRoundBtn") emitAction("nextRound");
   if (id === "submitBtn") submitRound();
+  if (id === "lockNongtangBtn") lockNongtangTarget();
   if (event.target.dataset.tab) {
     state.activeTab = event.target.dataset.tab;
     render();
@@ -351,6 +415,10 @@ function handleInput(event) {
     const key = event.target.dataset.skill;
     state.skill[key] = event.target.type === "number" ? numberOr(event.target.value, 0) : event.target.value;
     updateArmySummary();
+  }
+  if (event.target.dataset.skillRank) {
+    state.skill.predictions = state.skill.predictions || {};
+    state.skill.predictions[event.target.dataset.skillRank] = numberOr(event.target.value, "");
   }
 }
 
@@ -395,7 +463,45 @@ function enterRoom(res) {
   const me = getMe();
   state.placements = res.room.ownSubmission ? { ...makeEmptyPlacements(res.room.cityCount), ...res.room.ownSubmission.placements } : makeEmptyPlacements(res.room.cityCount);
   state.skill = res.room.ownSubmission ? { ...defaultSkill(me ? me.roleId : ""), ...res.room.ownSubmission.skill } : defaultSkill(me ? me.roleId : "");
+  syncNongtangTarget();
   render();
+}
+
+function tryAutoRejoin() {
+  if (state.room || state.autoRejoinTried || !state.playerId || !state.playerName) return;
+  state.autoRejoinTried = true;
+  resumeRoom(false);
+}
+
+function resumeRoom(showError) {
+  const name = state.playerName.trim();
+  if (!state.playerId || !name) {
+    if (showError) alert("没有可恢复的上次身份");
+    return;
+  }
+  const code = state.roomCode.trim().toUpperCase();
+  const fallback = () => {
+    socket.emit("rejoinPlayer", { playerId: state.playerId, name }, (res) => {
+      if (!res || !res.ok) {
+        if (showError) alert((res && res.message) || "恢复失败，请让房主重新发房间码");
+        return;
+      }
+      enterRoom(res);
+    });
+  };
+
+  if (!code) {
+    fallback();
+    return;
+  }
+
+  socket.emit("joinRoom", { name, code, playerId: state.playerId }, (res) => {
+    if (res && res.ok) {
+      enterRoom(res);
+      return;
+    }
+    fallback();
+  });
 }
 
 function leaveRoom() {
@@ -410,6 +516,16 @@ function leaveRoom() {
 function emitAction(action) {
   emit(action, {}, (res) => {
     state.room = res.room;
+    syncNongtangTarget();
+    render();
+  });
+}
+
+function lockNongtangTarget() {
+  if (!state.skill.targetId) return alert("请选择浓汤查看对象");
+  emit("setNongtangTarget", { targetId: state.skill.targetId }, (res) => {
+    state.room = res.room;
+    syncNongtangTarget();
     render();
   });
 }
@@ -419,6 +535,7 @@ function submitRound() {
   if (error) return alert(error);
   emit("submitRound", { placements: state.placements, skill: state.skill }, (res) => {
     state.room = res.room;
+    syncNongtangTarget();
     render();
   });
 }
@@ -433,9 +550,28 @@ function emit(eventName, payload, onOk) {
   });
 }
 
+function syncNongtangTarget() {
+  if (state.room && state.room.nongtangView && state.room.nongtangView.targetId) {
+    state.skill.targetId = state.room.nongtangView.targetId;
+  }
+}
+
+function canSubmitNow(role) {
+  if (!role) return false;
+  if (role.id !== "nongtang") return true;
+  const view = state.room.nongtangView || {};
+  return Boolean(view.targetId && view.targetSubmitted);
+}
+
 function validateLocalSubmission() {
   const me = getMe();
   if (!me || !me.roleId) return "还没有分配角色，不能提交本轮。";
+  if (me.roleId === "nongtang") {
+    const view = state.room.nongtangView || {};
+    if (!view.targetId) return "浓鸡汤需要先锁定查看对象。";
+    if (!view.targetSubmitted) return `${view.targetName || "查看对象"} 还没有提交，浓鸡汤需要等对方提交后再出兵。`;
+    state.skill.targetId = view.targetId;
+  }
   const placementError = validateLocalPlacements(me.roleId);
   if (placementError) return placementError;
   return validateLocalSkill(me.roleId);
@@ -457,6 +593,7 @@ function validateLocalPlacements(roleId) {
 
 function validateLocalSkill(roleId) {
   const skill = state.skill || {};
+  if (state.room && state.room.allianceInvite) return "";
   const usageError = localSkillUsageError(roleId, skill);
   if (usageError) return usageError;
 
@@ -479,8 +616,13 @@ function validateLocalSkill(roleId) {
     if (!Number.isInteger(extra)) return "大盘鸡额外兵数必须是整数。";
   }
   if (roleId === "baizhan") {
-    const correct = numberOr(skill.correct, 0);
-    if (correct < 0 || correct > state.room.players.length || !Number.isInteger(correct)) return "白斩鸡预测正确人数必须是 0 到玩家人数之间的整数。";
+    const predictions = skill.predictions || {};
+    for (const player of state.room.players) {
+      const rank = numberOr(predictions[player.id], NaN);
+      if (!Number.isInteger(rank) || rank < 1 || rank > state.room.players.length) {
+        return `白斩鸡需要给 ${player.name} 填写 1 到 ${state.room.players.length} 之间的整数名次。`;
+      }
+    }
   }
   return "";
 }
@@ -557,7 +699,7 @@ function defaultSkill(roleId) {
     paojiao: { auto: true },
     dapan: { active: false, extra: 0 },
     jiangyou: { used: false },
-    baizhan: { correct: 0 },
+    baizhan: { predictions: {} },
     koushui: {},
   };
   return { ...(map[roleId] || {}) };

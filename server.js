@@ -73,6 +73,18 @@ io.on("connection", (socket) => {
     return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
   }));
 
+  socket.on("rejoinPlayer", (payload, reply) => safeReply(reply, () => {
+    const playerId = String(payload.playerId || "").trim();
+    const found = findRoomByPlayerId(playerId);
+    if (!found) throw new Error("没有找到上次加入的房间");
+    const { room, player } = found;
+    player.name = cleanName(payload.name, player.name);
+    player.connected = true;
+    attachSocket(socket, room, player.id);
+    broadcast(room.code);
+    return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
+  }));
+
   socket.on("assignRoles", (_, reply) => safeReply(reply, () => {
     const { room, player } = requireMeta(socket);
     assertHost(room, player.id);
@@ -82,7 +94,22 @@ io.on("connection", (socket) => {
     });
     room.status = "playing";
     room.submissions[String(room.round)] = {};
+    room.nongtangTargets[String(room.round)] = {};
     room.currentResult = null;
+    broadcast(room.code);
+    return { room: publicRoom(room, player.id) };
+  }));
+
+  socket.on("setNongtangTarget", (payload, reply) => safeReply(reply, () => {
+    const { room, player } = requireMeta(socket);
+    if (player.roleId !== "nongtang") throw new Error("只有浓鸡汤可以查看玩家出兵。");
+    const roundKey = String(room.round);
+    room.nongtangTargets = room.nongtangTargets || {};
+    room.nongtangTargets[roundKey] = room.nongtangTargets[roundKey] || {};
+    if (room.submissions[roundKey] && room.submissions[roundKey][player.id]) throw new Error("你已经提交本轮，不能再更换查看对象。");
+    const target = requireOtherPlayer(room, player, payload.targetId, "浓汤查看对象");
+    if (hasNongtangViewedBefore(room, player.id, target.id)) throw new Error("浓鸡汤不能重复选择同一个玩家查看。");
+    room.nongtangTargets[roundKey][player.id] = target.id;
     broadcast(room.code);
     return { room: publicRoom(room, player.id) };
   }));
@@ -126,6 +153,7 @@ io.on("connection", (socket) => {
     }
     room.round = Math.min(6, room.round + 1);
     room.submissions[String(room.round)] = {};
+    room.nongtangTargets[String(room.round)] = {};
     room.currentResult = null;
     broadcast(room.code);
     return { room: publicRoom(room, player.id) };
@@ -170,6 +198,7 @@ function createRoom(hostName) {
     cityCount: 16,
     players: [host],
     submissions: {},
+    nongtangTargets: {},
     currentResult: null,
     createdAt: Date.now(),
   };
@@ -179,6 +208,15 @@ function createRoom(hostName) {
 
 function makePlayer(id, name) {
   return { id, name, roleId: "", history: 0, connected: true };
+}
+
+function findRoomByPlayerId(playerId) {
+  if (!playerId) return null;
+  for (const room of rooms.values()) {
+    const player = room.players.find((item) => item.id === playerId);
+    if (player) return { room, player };
+  }
+  return null;
 }
 
 function attachSocket(socket, room, playerId) {
@@ -216,6 +254,7 @@ function publicRoom(room, viewerId) {
     ownSubmission: roundSubmissions[viewerId] || null,
     skillUsage: publicSkillUsage(room, viewerId),
     allianceInvite: publicAllianceInvite(room, viewerId),
+    nongtangView: publicNongtangView(room, viewerId),
     leaderboard: buildLiveLeaderboard(room),
     currentResult: room.currentResult,
   };
@@ -241,6 +280,22 @@ function publicAllianceInvite(room, viewerId) {
     partnerId: invite.yuanyangPlayer.id,
     partnerName: invite.yuanyangPlayer.name,
     armyLimit: 17,
+  };
+}
+
+function publicNongtangView(room, viewerId) {
+  const player = room.players.find((item) => item.id === viewerId);
+  if (!player || player.roleId !== "nongtang") return null;
+  const roundKey = String(room.round);
+  const targetId = room.nongtangTargets && room.nongtangTargets[roundKey] && room.nongtangTargets[roundKey][viewerId];
+  if (!targetId) return { targetId: "", targetName: "", targetSubmitted: false, placements: null };
+  const target = room.players.find((item) => item.id === targetId);
+  const targetSubmission = room.submissions[roundKey] && room.submissions[roundKey][targetId];
+  return {
+    targetId,
+    targetName: target ? target.name : "未知玩家",
+    targetSubmitted: Boolean(targetSubmission),
+    placements: targetSubmission ? targetSubmission.placements : null,
   };
 }
 
@@ -285,6 +340,10 @@ function safeReply(reply, fn) {
 function validateSubmission(room, player, submission) {
   if (!player.roleId) throw new Error("还没有分配角色，不能提交本轮。");
   validateSkill(room, player, submission.skill || {});
+  if (player.roleId === "nongtang") {
+    const targetId = requireNongtangReady(room, player);
+    submission.skill = { ...(submission.skill || {}), targetId };
+  }
   validatePlacements(room, player, submission.placements, submission.skill || {});
 }
 
@@ -306,6 +365,7 @@ function validatePlacements(room, player, placements, skill) {
 
 function validateSkill(room, player, skill) {
   const roleId = player.roleId;
+  if (currentAllianceInvite(room, player.id)) return;
   if (usesLimitedSkill(roleId, skill)) {
     const limit = SKILL_LIMITS[roleId];
     if (limit.rounds && !limit.rounds.includes(room.round)) throw new Error(`${ROLE_BY_ID[roleId].name}只能在第 ${limit.rounds.join("、")} 轮使用技能。`);
@@ -342,9 +402,30 @@ function validateSkill(room, player, skill) {
     if (!Number.isInteger(extra)) throw new Error("大盘鸡额外兵数必须是整数。");
   }
   if (roleId === "baizhan") {
-    const correct = numberOr(skill.correct, 0);
-    if (correct < 0 || correct > room.players.length || !Number.isInteger(correct)) throw new Error("白斩鸡预测正确人数必须是 0 到玩家人数之间的整数。");
+    validateBaizhanPredictions(room, skill.predictions);
   }
+}
+
+function validateBaizhanPredictions(room, predictions) {
+  if (!predictions || typeof predictions !== "object") throw new Error("白斩鸡需要给每名玩家填写总榜预测名次。");
+  room.players.forEach((player) => {
+    const rank = numberOr(predictions[player.id], NaN);
+    if (!Number.isInteger(rank) || rank < 1 || rank > room.players.length) {
+      throw new Error(`白斩鸡需要给 ${player.name} 填写 1 到 ${room.players.length} 之间的整数名次。`);
+    }
+  });
+}
+
+function requireNongtangReady(room, player) {
+  const roundKey = String(room.round);
+  const targetId = room.nongtangTargets && room.nongtangTargets[roundKey] && room.nongtangTargets[roundKey][player.id];
+  if (!targetId) throw new Error("浓鸡汤需要先选择查看对象，等对方提交后再提交自己的出兵。");
+  const targetSubmission = room.submissions[roundKey] && room.submissions[roundKey][targetId];
+  if (!targetSubmission) {
+    const target = room.players.find((item) => item.id === targetId);
+    throw new Error(`${target ? target.name : "查看对象"} 还没有提交，浓鸡汤需要等对方提交后再出兵。`);
+  }
+  return targetId;
 }
 
 function requireCity(value, cityCount, label) {
@@ -377,6 +458,10 @@ function countSkillUses(room, playerId, roleId, options = {}) {
     if (isLateRound(room.round)) late += 1;
   }
   return { total, late };
+}
+
+function hasNongtangViewedBefore(room, playerId, targetId) {
+  return Object.entries(room.nongtangTargets || {}).some(([roundKey, targets]) => Number(roundKey) !== room.round && targets[playerId] === targetId);
 }
 
 function validateRoomSubmissions(room) {
@@ -534,7 +619,7 @@ function calculateRoom(room) {
   });
   applyPaojiao(players, skillByPlayer, prePaojiaoRoundScores, roundMultiplier, blockedSkillPlayerIds, roundScores, breakdowns);
   applyZuozong(players, skillByPlayer, prePaojiaoRoundScores, blockedSkillPlayerIds, roundScores, breakdowns);
-  applyBaizhan(players, skillByPlayer, blockedSkillPlayerIds, roundScores, breakdowns);
+  applyBaizhan(players, skillByPlayer, prePaojiaoTotals, blockedSkillPlayerIds, roundScores, breakdowns);
 
   const totals = {};
   players.forEach((player) => {
@@ -611,11 +696,39 @@ function applyZuozong(players, skillByPlayer, snapshot, blocked, scores, breakdo
   if (snapshot[target] <= threshold) addPoints(player.id, 10, "左宗猜中", scores, breakdowns);
 }
 
-function applyBaizhan(players, skillByPlayer, blocked, scores, breakdowns) {
+function applyBaizhan(players, skillByPlayer, prePaojiaoTotals, blocked, scores, breakdowns) {
   const player = players.find((item) => item.roleId === "baizhan");
   if (!player || blocked.has(player.id)) return;
-  const correct = clampNumber(skillByPlayer[player.id].correct, 0, players.length, 0);
+  const correct = countBaizhanCorrect(players, skillByPlayer[player.id].predictions, prePaojiaoTotals);
   if (correct > 0) addPoints(player.id, correct * 2, "白斩预测", scores, breakdowns);
+}
+
+function countBaizhanCorrect(players, predictions, prePaojiaoTotals) {
+  if (!predictions || typeof predictions !== "object") return 0;
+  const ranks = buildRankMap(players, prePaojiaoTotals);
+  return players.reduce((count, player) => {
+    const predicted = numberOr(predictions[player.id], NaN);
+    return count + (predicted === ranks[player.id] ? 1 : 0);
+  }, 0);
+}
+
+function buildRankMap(players, scores) {
+  const sorted = players
+    .map((player) => ({ id: player.id, score: numberOr(scores[player.id], 0) }))
+    .sort((a, b) => b.score - a.score);
+  const ranks = {};
+  let previousScore = null;
+  let previousRank = 0;
+  sorted.forEach((item, index) => {
+    if (previousScore !== null && Math.abs(item.score - previousScore) < 0.0001) {
+      ranks[item.id] = previousRank;
+    } else {
+      previousRank = index + 1;
+      previousScore = item.score;
+      ranks[item.id] = previousRank;
+    }
+  });
+  return ranks;
 }
 
 function buildSkillEvents(players, skillByPlayer, ctx) {
@@ -640,7 +753,10 @@ function buildSkillEvents(players, skillByPlayer, ctx) {
     if (player.roleId === "paojiao") return { ...base, status: hasBreakdown(player.id, "泡椒偷分", ctx.breakdowns) ? "已触发" : "未触发", detail: `泡椒偷分前累计 ${fmt(ctx.prePaojiaoTotals[player.id])}。` };
     if (player.roleId === "dapan") return skill.active ? { ...base, status: "已发动", detail: `额外 ${fmt(skill.extra || 0)} 兵，扣分 ${fmt(Math.abs(pointsByLabel(player.id, "大盘", ctx.breakdowns)))}。` } : base;
     if (player.roleId === "jiangyou") return skill.used ? { ...base, status: "已发动", detail: "按提交后的投兵表结算。" } : base;
-    if (player.roleId === "baizhan") return (skill.correct || 0) > 0 ? { ...base, status: "已发动", detail: `预测正确 ${fmt(skill.correct)} 人，得 ${fmt(pointsByLabel(player.id, "白斩", ctx.breakdowns))} 分。` } : base;
+    if (player.roleId === "baizhan") {
+      const correct = countBaizhanCorrect(players, skill.predictions, ctx.prePaojiaoTotals);
+      return skill.predictions ? { ...base, status: "已发动", detail: `总榜名次预测正确 ${fmt(correct)} 人，得 ${fmt(pointsByLabel(player.id, "白斩", ctx.breakdowns))} 分。` } : base;
+    }
     if (player.roleId === "koushui") return { ...base, status: "被动", detail: "允许使用 0.5 兵。" };
     return base;
   });
