@@ -304,6 +304,13 @@ select {
   text-align: center;
 }
 
+.move-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: end;
+  gap: 10px;
+}
+
 .board-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(72px, 1fr));
@@ -441,5 +448,9 @@ select {
 
   .viewed-grid {
     grid-template-columns: repeat(2, minmax(72px, 1fr));
+  }
+
+  .move-grid {
+    grid-template-columns: 1fr;
   }
 }

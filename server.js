@@ -73,6 +73,13 @@ io.on("connection", (socket) => {
     return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
   }));
 
+  socket.on("keepAlive", (_, reply) => safeReply(reply, () => {
+    const { room, player } = requireMeta(socket);
+    player.connected = true;
+    player.lastSeenAt = Date.now();
+    return { code: room.code };
+  }));
+
   socket.on("rejoinPlayer", (payload, reply) => safeReply(reply, () => {
     const playerId = String(payload.playerId || "").trim();
     const found = findRoomByPlayerId(playerId);
@@ -118,6 +125,7 @@ io.on("connection", (socket) => {
     const { room, player } = requireMeta(socket);
     const roundKey = String(room.round);
     room.submissions[roundKey] = room.submissions[roundKey] || {};
+    if (roundJiangyouAdjusted(room)) throw new Error("酱油鸡已经完成调整，本轮提交已锁定，不能再修改。");
     const submission = {
       playerId: player.id,
       placements: normalizePlacements(payload.placements, room.cityCount),
@@ -129,6 +137,14 @@ io.on("connection", (socket) => {
       ...submission,
       submittedAt: Date.now(),
     };
+    room.currentResult = null;
+    broadcast(room.code);
+    return { room: publicRoom(room, player.id) };
+  }));
+
+  socket.on("adjustJiangyou", (payload, reply) => safeReply(reply, () => {
+    const { room, player } = requireMeta(socket);
+    adjustJiangyou(room, player, payload);
     room.currentResult = null;
     broadcast(room.code);
     return { room: publicRoom(room, player.id) };
@@ -255,6 +271,7 @@ function publicRoom(room, viewerId) {
     skillUsage: publicSkillUsage(room, viewerId),
     allianceInvite: publicAllianceInvite(room, viewerId),
     nongtangView: publicNongtangView(room, viewerId),
+    jiangyouView: publicJiangyouView(room, viewerId),
     leaderboard: buildLiveLeaderboard(room),
     currentResult: room.currentResult,
   };
@@ -296,6 +313,24 @@ function publicNongtangView(room, viewerId) {
     targetName: target ? target.name : "未知玩家",
     targetSubmitted: Boolean(targetSubmission),
     placements: targetSubmission ? targetSubmission.placements : null,
+  };
+}
+
+function publicJiangyouView(room, viewerId) {
+  const player = room.players.find((item) => item.id === viewerId);
+  if (!player || player.roleId !== "jiangyou") return null;
+  const roundKey = String(room.round);
+  const submissions = room.submissions[roundKey] || {};
+  const ownSubmission = submissions[player.id];
+  const used = Boolean(ownSubmission && ownSubmission.skill && ownSubmission.skill.used);
+  const allSubmitted = room.players.every((item) => Boolean(submissions[item.id]));
+  return {
+    used,
+    allSubmitted,
+    adjusted: Boolean(ownSubmission && ownSubmission.skill && ownSubmission.skill.adjusted),
+    fromCity: ownSubmission && ownSubmission.skill ? ownSubmission.skill.fromCity || null : null,
+    toCity: ownSubmission && ownSubmission.skill ? ownSubmission.skill.toCity || null : null,
+    totals: used && allSubmitted ? buildCityTotals(room) : null,
   };
 }
 
@@ -470,7 +505,58 @@ function validateRoomSubmissions(room) {
     const submission = submissions[player.id];
     if (!submission) return;
     validateSubmission(room, player, submission);
+    if (player.roleId === "jiangyou" && submission.skill && submission.skill.used && !submission.skill.adjusted) {
+      throw new Error("酱油鸡已使用技能，需要等全员提交后移动 1 个兵，完成后才能结算。");
+    }
   });
+}
+
+function adjustJiangyou(room, player, payload) {
+  if (player.roleId !== "jiangyou") throw new Error("只有酱油鸡可以调整出兵。");
+  const roundKey = String(room.round);
+  const submissions = room.submissions[roundKey] || {};
+  const submission = submissions[player.id];
+  if (!submission) throw new Error("酱油鸡需要先提交本轮出兵，并勾选使用技能。");
+  if (!submission.skill || !submission.skill.used) throw new Error("本轮没有开启酱油鸡技能。");
+  if (submission.skill.adjusted) throw new Error("酱油鸡本轮已经调整过，不能再次调整。");
+  if (!room.players.every((item) => Boolean(submissions[item.id]))) throw new Error("需要等待所有玩家提交后，酱油鸡才能查看总分布并调整。");
+
+  const fromCity = requireCity(payload.fromCity, room.cityCount, "酱油移出城池");
+  const toCity = requireCity(payload.toCity, room.cityCount, "酱油移入城池");
+  if (fromCity === toCity) throw new Error("酱油鸡不能移动到同一个城池。");
+  if (numberOr(submission.placements[fromCity], 0) < 1) throw new Error(`${fromCity} 城没有可移动的 1 个兵。`);
+  if (numberOr(submission.placements[toCity], 0) + 1 > 12) throw new Error(`${toCity} 城移动后会超过单城 12 兵上限。`);
+
+  submission.placements[fromCity] = numberOr(submission.placements[fromCity], 0) - 1;
+  submission.placements[toCity] = numberOr(submission.placements[toCity], 0) + 1;
+  submission.skill = {
+    ...submission.skill,
+    adjusted: true,
+    fromCity,
+    toCity,
+  };
+  submission.adjustedAt = Date.now();
+  validateSubmission(room, player, submission);
+}
+
+function roundJiangyouAdjusted(room) {
+  const submissions = room.submissions[String(room.round)] || {};
+  return room.players.some((player) => {
+    const submission = submissions[player.id];
+    return player.roleId === "jiangyou" && submission && submission.skill && submission.skill.adjusted;
+  });
+}
+
+function buildCityTotals(room) {
+  const totals = {};
+  const submissions = room.submissions[String(room.round)] || {};
+  for (let city = 1; city <= room.cityCount; city += 1) totals[city] = 0;
+  Object.values(submissions).forEach((submission) => {
+    for (let city = 1; city <= room.cityCount; city += 1) {
+      totals[city] += numberOr(submission.placements && submission.placements[city], 0);
+    }
+  });
+  return totals;
 }
 
 function armyLimitFor(room, player, skill) {
@@ -752,7 +838,11 @@ function buildSkillEvents(players, skillByPlayer, ctx) {
     if (player.roleId === "yuanyang") return skill.active ? { ...base, status: ctx.yuanyangActive ? "已发动" : "未生效", detail: ctx.yuanyangActive ? `与 ${targetName(ctx.playerById, skill.partnerId)} 合作，收益平分。` : "合作玩家无效。" } : base;
     if (player.roleId === "paojiao") return { ...base, status: hasBreakdown(player.id, "泡椒偷分", ctx.breakdowns) ? "已触发" : "未触发", detail: `泡椒偷分前累计 ${fmt(ctx.prePaojiaoTotals[player.id])}。` };
     if (player.roleId === "dapan") return skill.active ? { ...base, status: "已发动", detail: `额外 ${fmt(skill.extra || 0)} 兵，扣分 ${fmt(Math.abs(pointsByLabel(player.id, "大盘", ctx.breakdowns)))}。` } : base;
-    if (player.roleId === "jiangyou") return skill.used ? { ...base, status: "已发动", detail: "按提交后的投兵表结算。" } : base;
+    if (player.roleId === "jiangyou") return skill.used ? {
+      ...base,
+      status: skill.adjusted ? "已发动" : "待调整",
+      detail: skill.adjusted ? `查看总分布后，将 1 兵从 ${skill.fromCity} 城移动到 ${skill.toCity} 城。` : "已声明使用，等待全员提交后移动 1 兵。",
+    } : base;
     if (player.roleId === "baizhan") {
       const correct = countBaizhanCorrect(players, skill.predictions, ctx.prePaojiaoTotals);
       return skill.predictions ? { ...base, status: "已发动", detail: `总榜名次预测正确 ${fmt(correct)} 人，得 ${fmt(pointsByLabel(player.id, "白斩", ctx.breakdowns))} 分。` } : base;

@@ -10,7 +10,7 @@ const ROLES = [
   { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "全局 3 次，第五/六轮合计 1 次；与一名玩家合作，双方各 17 兵，收益平分。" },
   { id: "paojiao", no: 8, short: "泡椒", name: "泡椒鸡爪", desc: "泡椒偷分前总榜唯一倒一时偷分，后两轮翻倍。" },
   { id: "dapan", no: 9, short: "大盘", name: "大盘鸡", desc: "全局 3 次，第五/六轮合计 1 次；额外 X 兵，未帮助得分兵扣分。" },
-  { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；计算前移动一枚军队。" },
+  { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；提交后等全员提交，查看总分布并移动 1 个兵。" },
   { id: "baizhan", no: 11, short: "白斩", name: "白斩鸡拼盘", desc: "预测泡椒偷分前总榜名次，每猜对一人 +2。" },
   { id: "koushui", no: 12, short: "口水", name: "口水鸡", desc: "军队可分成 0.5 使用。" },
 ];
@@ -32,12 +32,16 @@ const state = {
   roomCode: localStorage.getItem("chicken_online_room") || "",
   placements: makeEmptyPlacements(16),
   skill: {},
+  jiangyouMove: { fromCity: 1, toCity: 2 },
   activeTab: "ranking",
   autoRejoinTried: false,
 };
 
 const app = document.getElementById("app");
 const connectionState = document.getElementById("connectionState");
+window.setInterval(() => {
+  if (socket.connected && state.room) socket.emit("keepAlive", {});
+}, 60000);
 
 socket.on("connect", () => {
   connectionState.textContent = "已连接";
@@ -269,7 +273,7 @@ function renderSkillForm(role) {
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 本轮加量</label>
       <label>额外兵数 X<input data-skill="extra" type="number" min="0" max="12" value="${formatInput(state.skill.extra || 0)}" /></label>
     </div>`;
-  if (role.id === "jiangyou") return `${usage}<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；投兵表填写移动后的结果</label>`;
+  if (role.id === "jiangyou") return renderJiangyouForm(usage, checked);
   if (role.id === "baizhan") return renderBaizhanForm();
   if (role.id === "koushui") return `<p class="muted">口水鸡可用 0.5 兵，投兵表支持小数。</p>`;
   return `<p class="muted">无技能输入。</p>`;
@@ -322,6 +326,53 @@ function renderBaizhanForm() {
       <div class="prediction-grid">${rows}</div>
     </div>
   `;
+}
+
+function renderJiangyouForm(usage, checked) {
+  const view = state.room.jiangyouView || {};
+  const ownSubmitted = Boolean(state.room.ownSubmission);
+  if (!ownSubmitted) {
+    return `${usage}<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；先正常提交，等所有人提交后再移动 1 个兵</label>`;
+  }
+  if (!view.used) {
+    return `<p class="muted">本轮没有开启酱油技能，按已提交的投兵表结算。</p>`;
+  }
+  if (!view.allSubmitted) {
+    return `
+      ${usage}
+      <div class="skill-usage bad">已开启酱油技能 · 等待所有玩家提交后，会显示各城总兵力分布。</div>
+    `;
+  }
+  if (view.adjusted) {
+    return `
+      ${usage}
+      <div class="skill-usage">已调整：${fmt(view.fromCity)} 城 -1，${fmt(view.toCity)} 城 +1。</div>
+      ${renderCityTotals(view.totals)}
+    `;
+  }
+  return `
+    ${usage}
+    <div class="skill-form">
+      <div class="skill-usage">所有玩家已提交。查看各城总兵力后，移动自己 1 个兵。</div>
+      ${renderCityTotals(view.totals)}
+      <div class="move-grid">
+        <label>从<select data-jiangyou-move="fromCity">${cityOptionsHtml(state.jiangyouMove.fromCity || 1)}</select></label>
+        <label>到<select data-jiangyou-move="toCity">${cityOptionsHtml(state.jiangyouMove.toCity || 2)}</select></label>
+        <button id="adjustJiangyouBtn" class="secondary">确认移动 1 兵</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCityTotals(totals) {
+  const rows = Array.from({ length: state.room.cityCount }, (_, index) => state.room.cityCount - index)
+    .map((city) => `
+      <div class="viewed-city">
+        <span>${city} 城总兵</span>
+        <strong>${fmt(totals && totals[city] ? totals[city] : 0)}</strong>
+      </div>
+    `).join("");
+  return `<div class="viewed-grid">${rows}</div>`;
 }
 
 function renderViewedPlacements(placements) {
@@ -392,6 +443,7 @@ function handleClick(event) {
   if (id === "nextRoundBtn") emitAction("nextRound");
   if (id === "submitBtn") submitRound();
   if (id === "lockNongtangBtn") lockNongtangTarget();
+  if (id === "adjustJiangyouBtn") adjustJiangyou();
   if (event.target.dataset.tab) {
     state.activeTab = event.target.dataset.tab;
     render();
@@ -419,6 +471,9 @@ function handleInput(event) {
   if (event.target.dataset.skillRank) {
     state.skill.predictions = state.skill.predictions || {};
     state.skill.predictions[event.target.dataset.skillRank] = numberOr(event.target.value, "");
+  }
+  if (event.target.dataset.jiangyouMove) {
+    state.jiangyouMove[event.target.dataset.jiangyouMove] = numberOr(event.target.value, 1);
   }
 }
 
@@ -540,6 +595,17 @@ function submitRound() {
   });
 }
 
+function adjustJiangyou() {
+  emit("adjustJiangyou", state.jiangyouMove, (res) => {
+    state.room = res.room;
+    if (res.room.ownSubmission) {
+      state.placements = { ...makeEmptyPlacements(res.room.cityCount), ...res.room.ownSubmission.placements };
+      state.skill = { ...defaultSkill("jiangyou"), ...res.room.ownSubmission.skill };
+    }
+    render();
+  });
+}
+
 function emit(eventName, payload, onOk) {
   socket.emit(eventName, payload, (res) => {
     if (!res || !res.ok) {
@@ -558,6 +624,10 @@ function syncNongtangTarget() {
 
 function canSubmitNow(role) {
   if (!role) return false;
+  if (role.id === "jiangyou") {
+    const view = state.room.jiangyouView || {};
+    if (view.used && view.allSubmitted) return false;
+  }
   if (role.id !== "nongtang") return true;
   const view = state.room.nongtangView || {};
   return Boolean(view.targetId && view.targetSubmitted);
