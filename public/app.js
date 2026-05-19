@@ -40,12 +40,12 @@ const state = {
 const app = document.getElementById("app");
 const connectionState = document.getElementById("connectionState");
 window.setInterval(() => {
-  if (socket.connected && state.room) socket.emit("keepAlive", {});
-}, 60000);
+  if (socket.connected && state.room) socket.emit("keepAlive", keepAlivePayload());
+}, 15000);
 
 socket.on("connect", () => {
   connectionState.textContent = "已连接";
-  tryAutoRejoin();
+  restoreSocketSession();
 });
 
 socket.on("disconnect", () => {
@@ -523,9 +523,26 @@ function enterRoom(res) {
 }
 
 function tryAutoRejoin() {
-  if (state.room || state.autoRejoinTried || !state.playerId || !state.playerName) return;
+  if (state.autoRejoinTried || !state.playerId || !state.playerName) return;
   state.autoRejoinTried = true;
   resumeRoom(false);
+}
+
+function restoreSocketSession() {
+  if (state.room && state.playerId) {
+    socket.emit("keepAlive", keepAlivePayload(), (res) => {
+      if (!res || !res.ok) resumeRoom(false);
+    });
+    return;
+  }
+  tryAutoRejoin();
+}
+
+function keepAlivePayload() {
+  return {
+    code: state.room ? state.room.code : state.roomCode,
+    playerId: state.playerId,
+  };
 }
 
 function resumeRoom(showError) {

@@ -73,8 +73,8 @@ io.on("connection", (socket) => {
     return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
   }));
 
-  socket.on("keepAlive", (_, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("keepAlive", (payload, reply) => safeReply(reply, () => {
+    const { room, player } = requireOrRestoreMeta(socket, payload);
     player.connected = true;
     player.lastSeenAt = Date.now();
     return { code: room.code };
@@ -360,15 +360,29 @@ function requireMeta(socket) {
   return { room, player };
 }
 
+function requireOrRestoreMeta(socket, payload) {
+  const meta = socketMeta.get(socket.id);
+  if (meta) return requireMeta(socket);
+  const code = String((payload && payload.code) || "").trim().toUpperCase();
+  const playerId = String((payload && payload.playerId) || "").trim();
+  const found = code && rooms.has(code)
+    ? { room: rooms.get(code), player: rooms.get(code).players.find((item) => item.id === playerId) }
+    : findRoomByPlayerId(playerId);
+  if (!found || !found.room || !found.player) throw new Error("还没有加入房间");
+  attachSocket(socket, found.room, found.player.id);
+  return found;
+}
+
 function assertHost(room, playerId) {
   if (room.hostId !== playerId) throw new Error("只有房主可以操作");
 }
 
 function safeReply(reply, fn) {
   try {
-    reply({ ok: true, ...fn() });
+    const result = fn();
+    if (typeof reply === "function") reply({ ok: true, ...result });
   } catch (error) {
-    reply({ ok: false, message: error.message || "操作失败" });
+    if (typeof reply === "function") reply({ ok: false, message: error.message || "操作失败" });
   }
 }
 
