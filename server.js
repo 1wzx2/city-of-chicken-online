@@ -110,6 +110,7 @@ io.on("connection", (socket) => {
   socket.on("settleRound", (_, reply) => safeReply(reply, () => {
     const { room, player } = requireMeta(socket);
     assertHost(room, player.id);
+    validateRoomSubmissions(room);
     room.currentResult = calculateRoom(room);
     broadcast(room.code);
     return { room: publicRoom(room, player.id) };
@@ -214,7 +215,32 @@ function publicRoom(room, viewerId) {
     })),
     ownSubmission: roundSubmissions[viewerId] || null,
     skillUsage: publicSkillUsage(room, viewerId),
+    allianceInvite: publicAllianceInvite(room, viewerId),
+    leaderboard: buildLiveLeaderboard(room),
     currentResult: room.currentResult,
+  };
+}
+
+function buildLiveLeaderboard(room) {
+  const result = room.currentResult;
+  return room.players
+    .map((player) => ({
+      id: player.id,
+      name: player.name,
+      roleShort: player.roleId ? ROLE_BY_ID[player.roleId].short : "",
+      score: result ? numberOr(result.totals[player.id], player.history) : numberOr(player.history, 0),
+      submitted: Boolean((room.submissions[String(room.round)] || {})[player.id]),
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+function publicAllianceInvite(room, viewerId) {
+  const invite = currentAllianceInvite(room, viewerId);
+  if (!invite) return null;
+  return {
+    partnerId: invite.yuanyangPlayer.id,
+    partnerName: invite.yuanyangPlayer.name,
+    armyLimit: 17,
   };
 }
 
@@ -258,17 +284,23 @@ function safeReply(reply, fn) {
 
 function validateSubmission(room, player, submission) {
   if (!player.roleId) throw new Error("还没有分配角色，不能提交本轮。");
-  validatePlacements(room, player, submission.placements);
   validateSkill(room, player, submission.skill || {});
+  validatePlacements(room, player, submission.placements, submission.skill || {});
 }
 
-function validatePlacements(room, player, placements) {
+function validatePlacements(room, player, placements, skill) {
   const roleId = player.roleId;
+  const limit = armyLimitFor(room, player, skill);
+  let used = 0;
   for (let city = 1; city <= room.cityCount; city += 1) {
     const value = numberOr(placements[city], 0);
     if (value < 0) throw new Error(`${city} 城不能投负数兵。`);
     if (value > 12) throw new Error(`${city} 城单人最多只能放 12 兵。`);
     if (roleId !== "koushui" && !Number.isInteger(value)) throw new Error("只有口水鸡可以使用 0.5 兵。");
+    used += value;
+  }
+  if (Math.abs(used - limit) > 0.0001) {
+    throw new Error(`${player.name} 本轮必须刚好用完 ${fmt(limit)} 兵，当前用了 ${fmt(used)} 兵。`);
   }
 }
 
@@ -345,6 +377,32 @@ function countSkillUses(room, playerId, roleId, options = {}) {
     if (isLateRound(room.round)) late += 1;
   }
   return { total, late };
+}
+
+function validateRoomSubmissions(room) {
+  const submissions = room.submissions[String(room.round)] || {};
+  room.players.forEach((player) => {
+    const submission = submissions[player.id];
+    if (!submission) return;
+    validateSubmission(room, player, submission);
+  });
+}
+
+function armyLimitFor(room, player, skill) {
+  if (player.roleId === "yuanyang" && skill && skill.active) return 17;
+  const invite = currentAllianceInvite(room, player.id);
+  if (invite) return 17;
+  if (player.roleId === "dapan" && skill && skill.active) return 12 + Math.min(12, Math.max(0, numberOr(skill.extra, 0)));
+  return 12;
+}
+
+function currentAllianceInvite(room, viewerId) {
+  const yuanyangPlayer = room.players.find((player) => player.roleId === "yuanyang");
+  if (!yuanyangPlayer || yuanyangPlayer.id === viewerId) return null;
+  const yuanyangSubmission = (room.submissions[String(room.round)] || {})[yuanyangPlayer.id];
+  const skill = yuanyangSubmission ? yuanyangSubmission.skill || {} : {};
+  if (!skill.active || skill.partnerId !== viewerId) return null;
+  return { yuanyangPlayer };
 }
 
 function usesLimitedSkill(roleId, skill) {

@@ -203,6 +203,44 @@ select {
   font-weight: 700;
 }
 
+.leaderboard {
+  display: grid;
+  gap: 8px;
+}
+
+.leader-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfc;
+  padding: 9px;
+}
+
+.leader-row.self {
+  border-color: var(--accent);
+  background: var(--soft);
+}
+
+.rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #e7ecea;
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.leader-score {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
 .board-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(72px, 1fr));

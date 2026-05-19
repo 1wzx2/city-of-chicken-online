@@ -115,6 +115,7 @@ function renderRoom() {
         </div>
         <p class="muted">第 ${room.round} 轮，${submitted}/${room.players.length} 已提交。本机玩家：${escapeHtml(me ? me.name : "未知")}。</p>
       </section>
+      ${renderLiveLeaderboard()}
       ${isHost ? renderHostPanel() : ""}
       <section class="panel">
         <h2>玩家</h2>
@@ -142,6 +143,26 @@ function renderRoom() {
         </div>
       </section>
       ${room.currentResult ? renderResults(room.currentResult) : ""}
+    </section>
+  `;
+}
+
+function renderLiveLeaderboard() {
+  const room = state.room;
+  const title = room.currentResult ? "实时排行榜（已结算）" : "实时排行榜（历史分）";
+  return `
+    <section class="panel">
+      <h2>${title}</h2>
+      <div class="leaderboard">${(room.leaderboard || []).map((item, index) => `
+        <div class="leader-row ${item.id === state.playerId ? "self" : ""}">
+          <span class="rank">${index + 1}</span>
+          <div>
+            <strong>${escapeHtml(item.name)}${item.roleShort ? `（${escapeHtml(item.roleShort)}）` : ""}</strong>
+            <div class="muted">${item.submitted ? "本轮已提交" : "本轮未提交"}</div>
+          </div>
+          <span class="leader-score">${fmt(item.score)}</span>
+        </div>
+      `).join("")}</div>
     </section>
   `;
 }
@@ -189,7 +210,8 @@ function renderArmySummary() {
   const used = sumPlacements();
   const limit = armyLimit();
   const bad = Math.abs(used - limit) > 0.0001;
-  return `<div id="armySummary" class="army ${bad ? "bad" : ""}">已投 ${fmt(used)} / ${fmt(limit)} 兵</div>`;
+  const invite = state.room && state.room.allianceInvite ? ` · ${escapeHtml(state.room.allianceInvite.partnerName)} 已选择与你鸳鸯合作` : "";
+  return `<div id="armySummary" class="army ${bad ? "bad" : ""}">已投 ${fmt(used)} / ${fmt(limit)} 兵${invite}</div>`;
 }
 
 function renderSkillForm(role) {
@@ -346,7 +368,8 @@ function updateArmySummary() {
   const limit = armyLimit();
   const bad = Math.abs(used - limit) > 0.0001;
   el.classList.toggle("bad", bad);
-  el.textContent = `已投 ${fmt(used)} / ${fmt(limit)} 兵`;
+  const invite = state.room && state.room.allianceInvite ? ` · ${state.room.allianceInvite.partnerName} 已选择与你鸳鸯合作` : "";
+  el.textContent = `已投 ${fmt(used)} / ${fmt(limit)} 兵${invite}`;
 }
 
 function createRoom() {
@@ -419,12 +442,16 @@ function validateLocalSubmission() {
 }
 
 function validateLocalPlacements(roleId) {
+  let used = 0;
   for (let city = 1; city <= state.room.cityCount; city += 1) {
     const value = numberOr(state.placements[city], 0);
     if (value < 0) return `${city} 城不能投负数兵。`;
     if (value > 12) return `${city} 城单人最多只能放 12 兵。`;
     if (roleId !== "koushui" && !Number.isInteger(value)) return "只有口水鸡可以使用 0.5 兵。";
+    used += value;
   }
+  const limit = armyLimit();
+  if (Math.abs(used - limit) > 0.0001) return `本轮必须刚好用完 ${fmt(limit)} 兵，当前用了 ${fmt(used)} 兵。`;
   return "";
 }
 
@@ -501,6 +528,7 @@ function getMe() {
 
 function armyLimit() {
   const me = getMe();
+  if (state.room && state.room.allianceInvite) return 17;
   let limit = 12;
   if (me && me.roleId === "yuanyang" && state.skill.active) limit = 17;
   if (me && me.roleId === "dapan" && state.skill.active) limit += Math.min(12, Math.max(0, numberOr(state.skill.extra, 0)));
