@@ -1,20 +1,29 @@
 const socket = io();
 
 const ROLES = [
-  { id: "lazi", no: 1, short: "辣子", name: "辣子鸡丁", desc: "本轮同城其他玩家兵力 -3。" },
-  { id: "zha", no: 2, short: "炸鸡", name: "炸鸡桶", desc: "前四轮炸一城，按摧毁兵数得分。" },
-  { id: "kele", no: 3, short: "可乐", name: "可乐鸡翅", desc: "交换两个城池实际价值，差值不能超过 6。" },
+  { id: "lazi", no: 1, short: "辣子", name: "辣子鸡丁", desc: "全局只能使用一次，本轮同城其他玩家兵力 -3。" },
+  { id: "zha", no: 2, short: "炸鸡", name: "炸鸡桶", desc: "前四轮只能使用一次，炸一城，按摧毁兵数得分。" },
+  { id: "kele", no: 3, short: "可乐", name: "可乐鸡翅", desc: "全局 3 次，第五/六轮合计 1 次；交换两个城池实际价值，差值不能超过 6。" },
   { id: "nongtang", no: 4, short: "浓汤", name: "浓鸡汤", desc: "查看一名玩家放置后再放置。" },
   { id: "zuozong", no: 5, short: "左宗", name: "左宗鸡", desc: "猜中泡椒偷分前本轮倒数三名之一 +10。" },
-  { id: "huang", no: 6, short: "黄焖", name: "黄焖鸡米饭", desc: "指定城池胜者翻倍，失败进城者扣分。" },
-  { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "与一名玩家合作，双方各 17 兵，收益平分。" },
+  { id: "huang", no: 6, short: "黄焖", name: "黄焖鸡米饭", desc: "全局 3 次，第五/六轮合计 1 次；指定城池胜者翻倍，失败进城者扣分。" },
+  { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "全局 3 次，第五/六轮合计 1 次；与一名玩家合作，双方各 17 兵，收益平分。" },
   { id: "paojiao", no: 8, short: "泡椒", name: "泡椒鸡爪", desc: "泡椒偷分前总榜唯一倒一时偷分，后两轮翻倍。" },
-  { id: "dapan", no: 9, short: "大盘", name: "大盘鸡", desc: "额外 X 兵，未帮助得分兵扣分。" },
-  { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "计算前移动一枚军队。" },
+  { id: "dapan", no: 9, short: "大盘", name: "大盘鸡", desc: "全局 3 次，第五/六轮合计 1 次；额外 X 兵，未帮助得分兵扣分。" },
+  { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；计算前移动一枚军队。" },
   { id: "baizhan", no: 11, short: "白斩", name: "白斩鸡拼盘", desc: "预测泡椒偷分前累计排名，每对一人 +2。" },
   { id: "koushui", no: 12, short: "口水", name: "口水鸡", desc: "军队可分成 0.5 使用。" },
 ];
 const ROLE_BY_ID = Object.fromEntries(ROLES.map((role) => [role.id, role]));
+const SKILL_LIMITS = {
+  lazi: { total: 1, label: "全局 1 次" },
+  zha: { total: 1, rounds: [1, 2, 3, 4], label: "前四轮 1 次" },
+  kele: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  huang: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  yuanyang: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  dapan: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  jiangyou: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+};
 
 const state = {
   room: null,
@@ -166,10 +175,12 @@ function renderPlayer(player) {
 
 function renderPlacementInputs(cityCount) {
   const cities = Array.from({ length: cityCount }, (_, index) => cityCount - index);
+  const me = getMe();
+  const step = me && me.roleId === "koushui" ? "0.5" : "1";
   return cities.map((city) => `
     <label class="city-input">
       <span>${city} 城</span>
-      <input data-placement="${city}" type="number" step="0.5" value="${formatInput(state.placements[city])}" />
+      <input data-placement="${city}" type="number" step="${step}" value="${formatInput(state.placements[city])}" />
     </label>
   `).join("");
 }
@@ -188,14 +199,17 @@ function renderSkillForm(role) {
   const cityOptions = Array.from({ length: state.room.cityCount }, (_, index) => index + 1).map((city) => `<option value="${city}">${city} 城</option>`).join("");
   const checked = (key) => state.skill[key] ? "checked" : "";
   const selected = (key, value) => String(state.skill[key] || "") === String(value) ? "selected" : "";
+  const usage = renderSkillUsage(role);
 
-  if (role.id === "lazi") return `<label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 本轮使用辣子</label>`;
+  if (role.id === "lazi") return `${usage}<label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 本轮使用辣子</label>`;
   if (role.id === "zha") return `
+    ${usage}
     <div class="skill-form">
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 放炸鸡</label>
       <label>炸鸡城池<select data-skill="city">${cityOptionsHtml(state.skill.city || 1)}</select></label>
     </div>`;
   if (role.id === "kele") return `
+    ${usage}
     <div class="skill-form">
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 交换城池价值</label>
       <label>城池 A<select data-skill="cityA">${cityOptionsHtml(state.skill.cityA || 1)}</select></label>
@@ -204,25 +218,37 @@ function renderSkillForm(role) {
   if (role.id === "nongtang") return `<label>查看对象<select data-skill="targetId">${markSelected(playerOptions, state.skill.targetId)}</select></label>`;
   if (role.id === "zuozong") return `<label>猜本轮倒数对象<select data-skill="targetId">${markSelected(playerOptions, state.skill.targetId)}</select></label>`;
   if (role.id === "huang") return `
+    ${usage}
     <div class="skill-form">
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 指定黄焖城池</label>
       <label>黄焖城池<select data-skill="city">${cityOptionsHtml(state.skill.city || 1)}</select></label>
     </div>`;
   if (role.id === "yuanyang") return `
+    ${usage}
     <div class="skill-form">
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 本轮合作</label>
       <label>合作玩家<select data-skill="partnerId">${markSelected(playerOptions, state.skill.partnerId)}</select></label>
     </div>`;
   if (role.id === "paojiao") return `<label class="inline"><input type="checkbox" data-skill-check="auto" ${state.skill.auto !== false ? "checked" : ""} /> 自动判定泡椒偷分</label>`;
   if (role.id === "dapan") return `
+    ${usage}
     <div class="skill-form">
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 本轮加量</label>
       <label>额外兵数 X<input data-skill="extra" type="number" min="0" max="12" value="${formatInput(state.skill.extra || 0)}" /></label>
     </div>`;
-  if (role.id === "jiangyou") return `<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；投兵表填写移动后的结果</label>`;
+  if (role.id === "jiangyou") return `${usage}<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；投兵表填写移动后的结果</label>`;
   if (role.id === "baizhan") return `<label>预测正确人数<input data-skill="correct" type="number" min="0" max="${state.room.players.length}" value="${formatInput(state.skill.correct || 0)}" /></label>`;
   if (role.id === "koushui") return `<p class="muted">口水鸡可用 0.5 兵，投兵表支持小数。</p>`;
   return `<p class="muted">无技能输入。</p>`;
+}
+
+function renderSkillUsage(role) {
+  const usage = state.room.skillUsage;
+  if (!usage || !usage.limited) return "";
+  const parts = [`次数 ${usage.totalUsed}/${usage.totalMax}`];
+  if (usage.lateMax) parts.push(`第五/六轮 ${usage.lateUsed}/${usage.lateMax}`);
+  const roundText = usage.roundAllowed ? "" : "当前轮次不可使用";
+  return `<div class="skill-usage ${usage.roundAllowed ? "" : "bad"}">${escapeHtml(usage.rule)} · ${parts.join(" · ")}${roundText ? ` · ${roundText}` : ""}</div>`;
 }
 
 function renderResults(result) {
@@ -366,6 +392,8 @@ function emitAction(action) {
 }
 
 function submitRound() {
+  const error = validateLocalSubmission();
+  if (error) return alert(error);
   emit("submitRound", { placements: state.placements, skill: state.skill }, (res) => {
     state.room = res.room;
     render();
@@ -380,6 +408,91 @@ function emit(eventName, payload, onOk) {
     }
     onOk(res);
   });
+}
+
+function validateLocalSubmission() {
+  const me = getMe();
+  if (!me || !me.roleId) return "还没有分配角色，不能提交本轮。";
+  const placementError = validateLocalPlacements(me.roleId);
+  if (placementError) return placementError;
+  return validateLocalSkill(me.roleId);
+}
+
+function validateLocalPlacements(roleId) {
+  for (let city = 1; city <= state.room.cityCount; city += 1) {
+    const value = numberOr(state.placements[city], 0);
+    if (value < 0) return `${city} 城不能投负数兵。`;
+    if (value > 12) return `${city} 城单人最多只能放 12 兵。`;
+    if (roleId !== "koushui" && !Number.isInteger(value)) return "只有口水鸡可以使用 0.5 兵。";
+  }
+  return "";
+}
+
+function validateLocalSkill(roleId) {
+  const skill = state.skill || {};
+  const usageError = localSkillUsageError(roleId, skill);
+  if (usageError) return usageError;
+
+  if (roleId === "zha" && skill.active && !validCity(skill.city)) return "炸鸡城池必须是有效城池。";
+  if (roleId === "kele" && skill.active) {
+    const cityA = skillCity(skill.cityA);
+    const cityB = skillCity(skill.cityB);
+    if (!cityA || !cityB) return "可乐鸡翅交换的城池必须是有效城池。";
+    if (cityA === cityB) return "可乐鸡翅不能交换同一个城池。";
+    if (Math.abs(cityA - cityB) > 6) return "可乐鸡翅交换的两个城池实际值差不能超过 6。";
+  }
+  if (roleId === "nongtang" && skill.targetId && !validOtherPlayer(skill.targetId)) return "浓汤查看对象无效。";
+  if (roleId === "zuozong" && skill.targetId && !validOtherPlayer(skill.targetId)) return "左宗猜测对象无效。";
+  if (roleId === "huang" && skill.active && !validCity(skill.city)) return "黄焖城池必须是有效城池。";
+  if (roleId === "yuanyang" && skill.active && !validOtherPlayer(skill.partnerId)) return "请选择有效的鸳鸯合作玩家。";
+  if (roleId === "dapan" && skill.active) {
+    const extra = numberOr(skill.extra, 0);
+    if (extra <= 0) return "大盘鸡使用加量时，额外兵数必须大于 0。";
+    if (extra > 12) return "大盘鸡额外兵数最多为 12。";
+    if (!Number.isInteger(extra)) return "大盘鸡额外兵数必须是整数。";
+  }
+  if (roleId === "baizhan") {
+    const correct = numberOr(skill.correct, 0);
+    if (correct < 0 || correct > state.room.players.length || !Number.isInteger(correct)) return "白斩鸡预测正确人数必须是 0 到玩家人数之间的整数。";
+  }
+  return "";
+}
+
+function localSkillUsageError(roleId, skill) {
+  const limit = SKILL_LIMITS[roleId];
+  if (!limit || !usesLimitedSkill(roleId, skill)) return "";
+  if (limit.rounds && !limit.rounds.includes(state.room.round)) return `${ROLE_BY_ID[roleId].name}只能在第 ${limit.rounds.join("、")} 轮使用技能。`;
+
+  const usage = state.room.skillUsage || { totalUsed: 0, lateUsed: 0 };
+  const ownUsedThisRound = state.room.ownSubmission && usesLimitedSkill(roleId, state.room.ownSubmission.skill || {});
+  const totalBefore = Math.max(0, numberOr(usage.totalUsed, 0) - (ownUsedThisRound ? 1 : 0));
+  const lateBefore = Math.max(0, numberOr(usage.lateUsed, 0) - (ownUsedThisRound && isLateRound(state.room.round) ? 1 : 0));
+  if (limit.total && totalBefore + 1 > limit.total) return `${ROLE_BY_ID[roleId].name}技能次数已用完：${limit.label}。`;
+  if (limit.late && isLateRound(state.room.round) && lateBefore + 1 > limit.late) return `${ROLE_BY_ID[roleId].name}在第五/六轮只能使用一次技能。`;
+  return "";
+}
+
+function usesLimitedSkill(roleId, skill) {
+  if (!SKILL_LIMITS[roleId]) return false;
+  if (roleId === "jiangyou") return Boolean(skill.used);
+  return Boolean(skill.active);
+}
+
+function validCity(value) {
+  return Boolean(skillCity(value));
+}
+
+function skillCity(value) {
+  const city = numberOr(value, NaN);
+  return Number.isInteger(city) && city >= 1 && city <= state.room.cityCount ? city : 0;
+}
+
+function validOtherPlayer(playerId) {
+  return Boolean(playerId && playerId !== state.playerId && state.room.players.some((player) => player.id === playerId));
+}
+
+function isLateRound(round) {
+  return round === 5 || round === 6;
 }
 
 function getMe() {

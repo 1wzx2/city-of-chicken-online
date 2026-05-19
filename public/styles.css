@@ -235,6 +235,21 @@ select {
   gap: 10px;
 }
 
+.skill-usage {
+  margin-bottom: 10px;
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--accent-dark);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.skill-usage.bad {
+  background: #fff5f4;
+  color: var(--danger);
+}
+
 .inline {
   display: flex;
   align-items: center;

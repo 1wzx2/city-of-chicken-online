@@ -33,6 +33,15 @@ const ROLES = [
   { id: "koushui", no: 12, short: "口水", name: "口水鸡" },
 ];
 const ROLE_BY_ID = Object.fromEntries(ROLES.map((role) => [role.id, role]));
+const SKILL_LIMITS = {
+  lazi: { total: 1, label: "全局 1 次" },
+  zha: { total: 1, rounds: [1, 2, 3, 4], label: "前四轮 1 次" },
+  kele: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  huang: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  yuanyang: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  dapan: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+  jiangyou: { total: 3, late: 1, label: "全局 3 次，第五/六轮合计 1 次" },
+};
 
 io.on("connection", (socket) => {
   socket.on("createRoom", (payload, reply) => safeReply(reply, () => {
@@ -82,10 +91,15 @@ io.on("connection", (socket) => {
     const { room, player } = requireMeta(socket);
     const roundKey = String(room.round);
     room.submissions[roundKey] = room.submissions[roundKey] || {};
-    room.submissions[roundKey][player.id] = {
+    const submission = {
       playerId: player.id,
       placements: normalizePlacements(payload.placements, room.cityCount),
       skill: payload.skill && typeof payload.skill === "object" ? payload.skill : {},
+      submittedAt: Date.now(),
+    };
+    validateSubmission(room, player, submission);
+    room.submissions[roundKey][player.id] = {
+      ...submission,
       submittedAt: Date.now(),
     };
     room.currentResult = null;
@@ -199,7 +213,24 @@ function publicRoom(room, viewerId) {
       submitted: Boolean(roundSubmissions[p.id]),
     })),
     ownSubmission: roundSubmissions[viewerId] || null,
+    skillUsage: publicSkillUsage(room, viewerId),
     currentResult: room.currentResult,
+  };
+}
+
+function publicSkillUsage(room, playerId) {
+  const player = room.players.find((item) => item.id === playerId);
+  if (!player || !player.roleId) return null;
+  const limit = SKILL_LIMITS[player.roleId];
+  const counts = countSkillUses(room, player.id, player.roleId);
+  return {
+    limited: Boolean(limit),
+    rule: limit ? limit.label : "",
+    totalUsed: counts.total,
+    totalMax: limit ? limit.total : null,
+    lateUsed: counts.late,
+    lateMax: limit && limit.late ? limit.late : null,
+    roundAllowed: !limit || !limit.rounds || limit.rounds.includes(room.round),
   };
 }
 
@@ -223,6 +254,107 @@ function safeReply(reply, fn) {
   } catch (error) {
     reply({ ok: false, message: error.message || "操作失败" });
   }
+}
+
+function validateSubmission(room, player, submission) {
+  if (!player.roleId) throw new Error("还没有分配角色，不能提交本轮。");
+  validatePlacements(room, player, submission.placements);
+  validateSkill(room, player, submission.skill || {});
+}
+
+function validatePlacements(room, player, placements) {
+  const roleId = player.roleId;
+  for (let city = 1; city <= room.cityCount; city += 1) {
+    const value = numberOr(placements[city], 0);
+    if (value < 0) throw new Error(`${city} 城不能投负数兵。`);
+    if (value > 12) throw new Error(`${city} 城单人最多只能放 12 兵。`);
+    if (roleId !== "koushui" && !Number.isInteger(value)) throw new Error("只有口水鸡可以使用 0.5 兵。");
+  }
+}
+
+function validateSkill(room, player, skill) {
+  const roleId = player.roleId;
+  if (usesLimitedSkill(roleId, skill)) {
+    const limit = SKILL_LIMITS[roleId];
+    if (limit.rounds && !limit.rounds.includes(room.round)) throw new Error(`${ROLE_BY_ID[roleId].name}只能在第 ${limit.rounds.join("、")} 轮使用技能。`);
+    const counts = countSkillUses(room, player.id, roleId, { excludeRound: room.round, includeSkill: skill });
+    if (limit.total && counts.total > limit.total) throw new Error(`${ROLE_BY_ID[roleId].name}技能次数已用完：${limit.label}。`);
+    if (limit.late && counts.late > limit.late) throw new Error(`${ROLE_BY_ID[roleId].name}在第五/六轮只能使用一次技能。`);
+  }
+
+  if (roleId === "zha" && skill.active) {
+    requireCity(skill.city, room.cityCount, "炸鸡城池");
+  }
+  if (roleId === "kele" && skill.active) {
+    const cityA = requireCity(skill.cityA, room.cityCount, "可乐城池 A");
+    const cityB = requireCity(skill.cityB, room.cityCount, "可乐城池 B");
+    if (cityA === cityB) throw new Error("可乐鸡翅不能交换同一个城池。");
+    if (Math.abs(cityA - cityB) > 6) throw new Error("可乐鸡翅交换的两个城池实际值差不能超过 6。");
+  }
+  if (roleId === "nongtang" && skill.targetId) {
+    requireOtherPlayer(room, player, skill.targetId, "浓汤查看对象");
+  }
+  if (roleId === "zuozong" && skill.targetId) {
+    requireOtherPlayer(room, player, skill.targetId, "左宗猜测对象");
+  }
+  if (roleId === "huang" && skill.active) {
+    requireCity(skill.city, room.cityCount, "黄焖城池");
+  }
+  if (roleId === "yuanyang" && skill.active) {
+    requireOtherPlayer(room, player, skill.partnerId, "鸳鸯合作玩家");
+  }
+  if (roleId === "dapan" && skill.active) {
+    const extra = numberOr(skill.extra, 0);
+    if (extra <= 0) throw new Error("大盘鸡使用加量时，额外兵数必须大于 0。");
+    if (extra > 12) throw new Error("大盘鸡额外兵数最多为 12。");
+    if (!Number.isInteger(extra)) throw new Error("大盘鸡额外兵数必须是整数。");
+  }
+  if (roleId === "baizhan") {
+    const correct = numberOr(skill.correct, 0);
+    if (correct < 0 || correct > room.players.length || !Number.isInteger(correct)) throw new Error("白斩鸡预测正确人数必须是 0 到玩家人数之间的整数。");
+  }
+}
+
+function requireCity(value, cityCount, label) {
+  const city = numberOr(value, NaN);
+  if (!Number.isInteger(city) || city < 1 || city > cityCount) throw new Error(`${label}必须是 1 到 ${cityCount} 的整数。`);
+  return city;
+}
+
+function requireOtherPlayer(room, player, targetId, label) {
+  if (!targetId) throw new Error(`请选择${label}。`);
+  if (targetId === player.id) throw new Error(`${label}不能选择自己。`);
+  const target = room.players.find((item) => item.id === targetId);
+  if (!target) throw new Error(`${label}不存在。`);
+  return target;
+}
+
+function countSkillUses(room, playerId, roleId, options = {}) {
+  let total = 0;
+  let late = 0;
+  Object.entries(room.submissions).forEach(([roundKey, submissions]) => {
+    const round = Number(roundKey);
+    if (round === options.excludeRound) return;
+    const submission = submissions[playerId];
+    if (!submission || !usesLimitedSkill(roleId, submission.skill || {})) return;
+    total += 1;
+    if (isLateRound(round)) late += 1;
+  });
+  if (options.includeSkill && usesLimitedSkill(roleId, options.includeSkill)) {
+    total += 1;
+    if (isLateRound(room.round)) late += 1;
+  }
+  return { total, late };
+}
+
+function usesLimitedSkill(roleId, skill) {
+  if (!SKILL_LIMITS[roleId]) return false;
+  if (roleId === "jiangyou") return Boolean(skill.used);
+  return Boolean(skill.active);
+}
+
+function isLateRound(round) {
+  return round === 5 || round === 6;
 }
 
 function calculateRoom(room) {
