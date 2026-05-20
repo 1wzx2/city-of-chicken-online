@@ -66,6 +66,7 @@ io.on("connection", (socket) => {
       player.name = cleanName(payload.name, player.name);
       player.connected = true;
     } else {
+      if (room.status !== "lobby") throw new Error("游戏已经开始，不能再加入新玩家。");
       if (room.players.length >= 12) throw new Error("房间最多 12 名玩家");
       player = makePlayer(playerId, cleanName(payload.name, "玩家"));
       room.players.push(player);
@@ -173,6 +174,7 @@ io.on("connection", (socket) => {
   socket.on("settleRound", (_, reply) => safeReply(reply, async () => {
     const { room, player } = await requireMeta(socket);
     assertHost(room, player.id);
+    if (room.currentResult) throw new Error("本轮已经结算，请进入下一轮。");
     validateRoomSubmissions(room);
     room.currentResult = calculateRoom(room);
     await saveAndBroadcast(room);
@@ -182,11 +184,11 @@ io.on("connection", (socket) => {
   socket.on("nextRound", (_, reply) => safeReply(reply, async () => {
     const { room, player } = await requireMeta(socket);
     assertHost(room, player.id);
-    if (room.currentResult) {
-      room.players.forEach((p) => {
-        p.history = numberOr(room.currentResult.totals[p.id], p.history);
-      });
-    }
+    if (!room.currentResult) throw new Error("请先结算本轮，再进入下一轮。");
+    if (room.round >= 6) throw new Error("第六轮已经结算，游戏结束。");
+    room.players.forEach((p) => {
+      p.history = numberOr(room.currentResult.totals[p.id], p.history);
+    });
     room.round = Math.min(6, room.round + 1);
     room.submissions[String(room.round)] = {};
     room.nongtangTargets[String(room.round)] = {};
@@ -724,6 +726,23 @@ function buildJiangyouPlayerPlacements(room) {
   }));
 }
 
+function buildCityPlacementRows(players, raw, adjusted, city) {
+  return players
+    .map((player) => {
+      const placed = numberOr(raw[player.id] && raw[player.id][city], 0);
+      const finalValue = numberOr(adjusted[player.id] && adjusted[player.id][city], placed);
+      return {
+        playerId: player.id,
+        name: player.name,
+        roleShort: player.roleId ? ROLE_BY_ID[player.roleId].short : "",
+        placed: fmt(placed),
+        adjusted: fmt(finalValue),
+      };
+    })
+    .filter((item) => Number(item.placed) > 0 || Number(item.adjusted) > 0)
+    .sort((a, b) => Number(b.adjusted) - Number(a.adjusted) || Number(b.placed) - Number(a.placed) || a.name.localeCompare(b.name, "zh-Hans-CN"));
+}
+
 function validateSkillLimit(room, player, skill, options = {}) {
   const roleId = player.roleId;
   if (!usesLimitedSkill(roleId, skill)) return;
@@ -858,7 +877,13 @@ function calculateRoom(room) {
       ...entity,
       value: entity.members.reduce((sum, playerId) => sum + adjusted[playerId][city], 0),
     }));
-    const result = { city, value: actualValues[city], winnerLabel: "", formula: "" };
+    const result = {
+      city,
+      value: actualValues[city],
+      winnerLabel: "",
+      formula: "",
+      placements: buildCityPlacementRows(players, raw, adjusted, city),
+    };
 
     if (bombActive && city === bombCity) {
       const destroyed = players.reduce((sum, player) => sum + Math.max(0, raw[player.id][city]), 0);

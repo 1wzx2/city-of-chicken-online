@@ -190,16 +190,25 @@ function renderLiveLeaderboard() {
 }
 
 function renderHostPanel() {
+  const room = state.room;
+  const hasResult = Boolean(room.currentResult);
+  const gameEnded = hasResult && room.round >= 6;
+  const canAssign = room.status === "lobby";
+  const canSettle = room.status === "playing" && !hasResult;
+  const canNext = room.status === "playing" && hasResult && !gameEnded;
+  const hint = gameEnded
+    ? "第六轮已结算，游戏结束。下方排名就是最终结果。"
+    : (hasResult ? "本轮已结算，只能进入下一轮。" : "本轮未结算，只能等待提交后结算本轮。");
   return `
     <section class="panel">
       <h2>房主操作</h2>
       <div class="actions">
-        <button id="assignRolesBtn">随机分配角色</button>
-        <button id="settleBtn" class="secondary">结算本轮</button>
-        <button id="nextRoundBtn" class="secondary">进入下一轮</button>
+        <button id="assignRolesBtn" ${canAssign ? "" : "disabled"}>随机分配角色</button>
+        <button id="settleBtn" class="secondary" ${canSettle ? "" : "disabled"}>结算本轮</button>
+        <button id="nextRoundBtn" class="secondary" ${canNext ? "" : "disabled"}>${gameEnded ? "游戏已结束" : "进入下一轮"}</button>
         <button id="dissolveRoomBtn" class="secondary danger">解散房间</button>
       </div>
-      <p class="muted">重新随机角色会清空本轮提交。结算时未提交玩家按 0 兵处理。</p>
+      <p class="muted">${hint} 解散房间一直可用。</p>
     </section>
   `;
 }
@@ -446,11 +455,12 @@ function renderViewedPlacements(placements) {
 }
 
 function renderResults(result) {
+  const final = state.room && state.room.round >= 6;
   return `
     <section class="panel">
-      <h2>结算结果</h2>
+      <h2>${final ? "最终游戏结果" : "结算结果"}</h2>
       <div class="tabs">
-        <button data-tab="ranking" class="${state.activeTab === "ranking" ? "active" : ""}">排名</button>
+        <button data-tab="ranking" class="${state.activeTab === "ranking" ? "active" : ""}">${final ? "总排名" : "排名"}</button>
         <button data-tab="skills" class="${state.activeTab === "skills" ? "active" : ""}">技能</button>
         <button data-tab="cities" class="${state.activeTab === "cities" ? "active" : ""}">城池</button>
       </div>
@@ -483,10 +493,22 @@ function renderSkillEvents(result) {
 }
 
 function renderCityResults(result) {
-  return `<div class="card-list">${result.cityResults.map((city) => `
-    <div class="city-card">
-      <strong>${city.city} 城 · 值 ${fmt(city.value)} · ${escapeHtml(city.winnerLabel || "无人得分")}</strong>
-      <div class="muted">${escapeHtml(city.formula)}</div>
+  return `<div class="city-board">${result.cityResults.map((city) => `
+    <div class="city-cell ${city.winnerLabel ? "won" : ""}">
+      <div class="city-head">
+        <strong>${city.city}</strong>
+        <span>值 ${fmt(city.value)}</span>
+      </div>
+      <div class="city-winner">${escapeHtml(city.winnerLabel || "无人得分")}</div>
+      <div class="city-placements">
+        ${(city.placements || []).length ? city.placements.map((item) => `
+          <div class="city-placement">
+            <span>${escapeHtml(item.name)}${item.roleShort ? `（${escapeHtml(item.roleShort)}）` : ""}</span>
+            <strong>${fmt(item.placed)}${Number(item.adjusted) !== Number(item.placed) ? `→${fmt(item.adjusted)}` : ""}</strong>
+          </div>
+        `).join("") : `<div class="muted">本城无人投兵</div>`}
+      </div>
+      <div class="formula">${escapeHtml(city.formula)}</div>
     </div>
   `).join("")}</div>`;
 }

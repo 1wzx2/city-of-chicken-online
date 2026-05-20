@@ -434,6 +434,64 @@ select {
   font-size: 12px;
 }
 
+.city-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.city-cell {
+  min-height: 160px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+  padding: 10px;
+}
+
+.city-cell.won {
+  background: #fbfefd;
+}
+
+.city-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.city-head strong {
+  font-size: 20px;
+}
+
+.city-head span,
+.city-winner {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.city-winner {
+  margin: 2px 0 8px;
+}
+
+.city-placements {
+  display: grid;
+  gap: 5px;
+}
+
+.city-placement {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.city-placement span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .tabs {
   display: flex;
   gap: 8px;
@@ -481,6 +539,10 @@ select {
 
   .viewed-grid {
     grid-template-columns: repeat(2, minmax(72px, 1fr));
+  }
+
+  .city-board {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
 
   .move-grid {
