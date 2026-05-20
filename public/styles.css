@@ -578,6 +578,31 @@ select:disabled {
   font-size: 15px;
 }
 
+.skill-usage-log {
+  display: grid;
+  gap: 7px;
+}
+
+.usage-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbfcfd;
+  padding: 8px 10px;
+}
+
+.usage-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.usage-row strong {
+  color: var(--accent-dark);
+  white-space: nowrap;
+}
+
 .tabs {
   display: flex;
   flex-wrap: wrap;
@@ -707,6 +732,16 @@ select:disabled {
     align-items: flex-start;
     flex-direction: column;
     gap: 1px;
+  }
+
+  .usage-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .usage-row strong {
+    white-space: normal;
   }
 
   .move-grid,

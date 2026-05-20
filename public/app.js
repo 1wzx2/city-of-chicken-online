@@ -165,6 +165,7 @@ function renderRoom() {
         </div>
       </section>
       ${room.currentResult ? renderResults(room.currentResult) : ""}
+      ${renderRoundLogsPanel()}
     </section>
   `;
 }
@@ -463,12 +464,10 @@ function renderResults(result) {
         <button data-tab="ranking" class="${state.activeTab === "ranking" ? "active" : ""}">${final ? "总排名" : "排名"}</button>
         <button data-tab="skills" class="${state.activeTab === "skills" ? "active" : ""}">技能</button>
         <button data-tab="cities" class="${state.activeTab === "cities" ? "active" : ""}">城池</button>
-        <button data-tab="logs" class="${state.activeTab === "logs" ? "active" : ""}">日志</button>
       </div>
       <div class="${state.activeTab === "ranking" ? "" : "hidden"}">${renderRanking(result)}</div>
       <div class="${state.activeTab === "skills" ? "" : "hidden"}">${renderSkillEvents(result)}</div>
       <div class="${state.activeTab === "cities" ? "" : "hidden"}">${renderCityResults(result)}</div>
-      <div class="${state.activeTab === "logs" ? "" : "hidden"}">${renderRoundLogs()}</div>
     </section>
   `;
 }
@@ -515,6 +514,15 @@ function renderCityResults(result) {
   `).join("")}</div>`;
 }
 
+function renderRoundLogsPanel() {
+  return `
+    <section class="panel">
+      <h2>历史日志</h2>
+      ${renderRoundLogs()}
+    </section>
+  `;
+}
+
 function renderRoundLogs() {
   const logs = state.room && state.room.roundLogs ? [...state.room.roundLogs].sort((a, b) => b.round - a.round) : [];
   if (!logs.length) return `<p class="muted">还没有结算日志。</p>`;
@@ -525,10 +533,25 @@ function renderRoundLogs() {
       ${renderRanking(log)}
       <h3>技能</h3>
       ${renderSkillEvents(log)}
+      ${renderSkillUsageLog(log.skillUsage)}
       <h3>城池分布</h3>
       ${renderCityResults(log)}
     </details>
   `).join("")}</div>`;
+}
+
+function renderSkillUsageLog(items) {
+  if (!items || !items.length) return "";
+  return `
+    <div class="skill-usage-log">
+      ${items.map((item) => `
+        <div class="usage-row">
+          <span>${escapeHtml(item.name)}${item.roleShort ? `（${escapeHtml(item.roleShort)}）` : ""}</span>
+          <strong>${item.limited ? `剩余 ${fmt(item.totalLeft)} / ${fmt(item.totalMax)}${item.lateMax ? ` · 后两轮剩余 ${fmt(item.lateLeft)} / ${fmt(item.lateMax)}` : ""}` : "无次数限制"}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
 function handleClick(event) {

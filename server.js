@@ -755,6 +755,7 @@ function saveRoundLog(room) {
     settledAt: Date.now(),
     ranking: room.currentResult.ranking,
     skillEvents: room.currentResult.skillEvents,
+    skillUsage: buildSkillUsageLog(room),
     cityResults: room.currentResult.cityResults,
   };
   const index = room.roundLogs.findIndex((item) => item.round === room.round);
@@ -764,6 +765,28 @@ function saveRoundLog(room) {
     room.roundLogs.push(log);
   }
   room.roundLogs.sort((a, b) => a.round - b.round);
+}
+
+function buildSkillUsageLog(room) {
+  return room.players.map((player) => {
+    const role = ROLE_BY_ID[player.roleId];
+    const limit = SKILL_LIMITS[player.roleId];
+    const counts = countSkillUses(room, player.id, player.roleId);
+    return {
+      playerId: player.id,
+      name: player.name,
+      roleShort: role ? role.short : "",
+      roleName: role ? role.name : "",
+      limited: Boolean(limit),
+      rule: limit ? limit.label : "无次数限制",
+      totalUsed: counts.total,
+      totalMax: limit ? limit.total : null,
+      totalLeft: limit && limit.total !== null && limit.total !== undefined ? Math.max(0, limit.total - counts.total) : null,
+      lateUsed: counts.late,
+      lateMax: limit && limit.late ? limit.late : null,
+      lateLeft: limit && limit.late ? Math.max(0, limit.late - counts.late) : null,
+    };
+  });
 }
 
 function validateSkillLimit(room, player, skill, options = {}) {
