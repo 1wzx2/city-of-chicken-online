@@ -144,7 +144,7 @@ function renderRoom() {
       </section>
       <section class="panel">
         <h2>你的角色</h2>
-        ${role ? `<div class="role-name">${role.no}. ${escapeHtml(role.name)}</div><p class="muted">${escapeHtml(role.desc)}</p>` : `<p class="muted">等待房主随机分配角色。</p>`}
+        ${renderOwnRolePanel(role)}
       </section>
     </aside>
     <section class="main">
@@ -250,13 +250,26 @@ function renderYuanyangQuickPanel(role) {
   `;
 }
 
+function renderOwnRolePanel(role) {
+  if (role) return `<div class="role-name">${role.no}. ${escapeHtml(role.name)}</div><p class="muted">${escapeHtml(role.desc)}</p>`;
+  const me = getMe();
+  if (state.room.status !== "lobby") return `<p class="muted">等待房主随机分配角色。</p>`;
+  return `
+    <div class="skill-form">
+      <label>预选角色<select id="rolePreferenceSelect">${rolePreferenceOptions(me ? me.preferredRoleId : "")}</select></label>
+      <p class="muted">如果只有你预选这个角色，房主分配时会优先给你；如果多人预选同一个角色，相关玩家随机分配。</p>
+    </div>
+  `;
+}
+
 function renderPlayer(player) {
   const status = player.connected ? "在线" : "离线";
+  const preferred = state.room.status === "lobby" && player.preferredRoleName ? ` · 预选 ${escapeHtml(player.preferredRoleShort || player.preferredRoleName)}` : "";
   return `
     <div class="player">
       <div>
         <strong>${escapeHtml(player.name)}</strong>
-        <div class="muted">${player.id === state.room.hostId ? "房主" : "玩家"} · ${escapeHtml(player.roleName || "未分配角色")} · ${status}</div>
+        <div class="muted">${player.id === state.room.hostId ? "房主" : "玩家"} · ${escapeHtml(player.roleName || "未分配角色")} · ${status}${preferred}</div>
       </div>
       <span class="tag ${player.submitted ? "" : "warn"}">${player.submitted ? "已提交" : "未提交"}</span>
     </div>
@@ -602,6 +615,9 @@ function handleInput(event) {
 }
 
 function handleChange(event) {
+  if (event.target.id === "rolePreferenceSelect") {
+    setRolePreference(event.target.value);
+  }
   if (event.target.dataset.skillCheck) {
     state.skill[event.target.dataset.skillCheck] = event.target.checked;
     renderRoom();
@@ -742,6 +758,13 @@ function lockYuanyangPartner() {
   emit("setYuanyangPartner", { partnerId: state.skill.partnerId }, (res) => {
     state.room = res.room;
     state.skill = { ...defaultSkill("yuanyang"), partnerId: state.room.yuanyangBinding ? state.room.yuanyangBinding.partnerId : "" };
+    render();
+  });
+}
+
+function setRolePreference(roleId) {
+  emit("setRolePreference", { roleId }, (res) => {
+    state.room = res.room;
     render();
   });
 }
@@ -947,6 +970,10 @@ function cityOptionsHtml(selectedValue) {
   return Array.from({ length: state.room.cityCount }, (_, index) => index + 1)
     .map((city) => `<option value="${city}" ${String(city) === String(selectedValue) ? "selected" : ""}>${city} 城</option>`)
     .join("");
+}
+
+function rolePreferenceOptions(selectedValue) {
+  return `<option value="">不预选，随机</option>${ROLES.map((role) => `<option value="${role.id}" ${String(role.id) === String(selectedValue) ? "selected" : ""}>${role.no}. ${escapeHtml(role.name)}</option>`).join("")}`;
 }
 
 function numberOr(value, fallback) {

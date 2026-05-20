@@ -99,15 +99,22 @@ io.on("connection", (socket) => {
   socket.on("assignRoles", (_, reply) => safeReply(reply, async () => {
     const { room, player } = await requireMeta(socket);
     assertHost(room, player.id);
-    const roles = shuffle([...ROLES]);
-    room.players.forEach((p, index) => {
-      p.roleId = roles[index].id;
-    });
+    assignRolesWithPreferences(room);
     room.status = "playing";
     room.submissions[String(room.round)] = {};
     room.nongtangTargets[String(room.round)] = {};
     room.yuanyangBindings[String(room.round)] = {};
     room.currentResult = null;
+    await saveAndBroadcast(room);
+    return { room: publicRoom(room, player.id) };
+  }));
+
+  socket.on("setRolePreference", (payload, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
+    if (room.status !== "lobby") throw new Error("游戏已经开始，不能再预选角色。");
+    const roleId = String(payload.roleId || "").trim();
+    if (roleId && !ROLE_BY_ID[roleId]) throw new Error("预选角色不存在。");
+    player.preferredRoleId = roleId;
     await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
@@ -260,7 +267,7 @@ async function createRoom(hostName) {
 }
 
 function makePlayer(id, name) {
-  return { id, name, roleId: "", history: 0, connected: true };
+  return { id, name, roleId: "", preferredRoleId: "", history: 0, connected: true };
 }
 
 async function findRoomByPlayerId(playerId) {
@@ -284,6 +291,32 @@ function attachSocket(socket, room, playerId) {
   socketMeta.set(socket.id, { code: room.code, playerId });
 }
 
+function assignRolesWithPreferences(room) {
+  const players = shuffle([...room.players]);
+  const roleIds = new Set(ROLES.map((role) => role.id));
+  const picks = new Map();
+  players.forEach((player) => {
+    player.roleId = "";
+    const preferred = player.preferredRoleId;
+    if (!preferred || !roleIds.has(preferred)) return;
+    if (!picks.has(preferred)) picks.set(preferred, []);
+    picks.get(preferred).push(player);
+  });
+
+  const assignedRoleIds = new Set();
+  picks.forEach((pickedPlayers, roleId) => {
+    if (pickedPlayers.length !== 1) return;
+    pickedPlayers[0].roleId = roleId;
+    assignedRoleIds.add(roleId);
+  });
+
+  const remainingPlayers = shuffle(players.filter((player) => !player.roleId));
+  const remainingRoles = shuffle(ROLES.filter((role) => !assignedRoleIds.has(role.id)));
+  remainingPlayers.forEach((player, index) => {
+    player.roleId = remainingRoles[index].id;
+  });
+}
+
 function normalizeRoom(room) {
   room.code = String(room.code || "").trim().toUpperCase();
   room.hostId = room.hostId || "";
@@ -301,6 +334,7 @@ function normalizeRoom(room) {
     player.id = String(player.id || "");
     player.name = cleanName(player.name, "玩家");
     player.roleId = player.roleId || "";
+    player.preferredRoleId = player.preferredRoleId && ROLE_BY_ID[player.preferredRoleId] ? player.preferredRoleId : "";
     player.history = numberOr(player.history, 0);
     player.connected = Boolean(player.connected);
   });
@@ -373,6 +407,9 @@ function publicRoom(room, viewerId) {
       roleId: p.roleId,
       roleName: p.roleId ? ROLE_BY_ID[p.roleId].name : "",
       roleShort: p.roleId ? ROLE_BY_ID[p.roleId].short : "",
+      preferredRoleId: p.preferredRoleId || "",
+      preferredRoleName: p.preferredRoleId ? ROLE_BY_ID[p.preferredRoleId].name : "",
+      preferredRoleShort: p.preferredRoleId ? ROLE_BY_ID[p.preferredRoleId].short : "",
       history: p.history,
       connected: p.connected,
       submitted: Boolean(roundSubmissions[p.id]),
