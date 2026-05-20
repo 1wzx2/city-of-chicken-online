@@ -133,6 +133,7 @@ io.on("connection", (socket) => {
     room.yuanyangBindings[roundKey] = room.yuanyangBindings[roundKey] || {};
     if (room.submissions[roundKey] && room.submissions[roundKey][player.id]) throw new Error("你已经提交本轮出兵，不能再更换合作对象。");
     const target = requireOtherPlayer(room, player, payload.partnerId, "鸳鸯合作玩家");
+    if (hasYuanyangPartneredBefore(room, player.id, target.id)) throw new Error("鸳鸯鸡不能重复绑定同一个合作玩家。");
     validateSkillLimit(room, player, { active: true }, { excludeRound: room.round, includeYuanyangBinding: true });
     room.yuanyangBindings[roundKey][player.id] = target.id;
     room.currentResult = null;
@@ -659,6 +660,10 @@ function countSkillUses(room, playerId, roleId, options = {}) {
 
 function hasNongtangViewedBefore(room, playerId, targetId) {
   return Object.entries(room.nongtangTargets || {}).some(([roundKey, targets]) => Number(roundKey) !== room.round && targets[playerId] === targetId);
+}
+
+function hasYuanyangPartneredBefore(room, playerId, targetId) {
+  return Object.entries(room.yuanyangBindings || {}).some(([roundKey, bindings]) => Number(roundKey) !== room.round && bindings[playerId] === targetId);
 }
 
 function validateRoomSubmissions(room) {
