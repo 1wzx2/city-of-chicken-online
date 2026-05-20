@@ -415,7 +415,7 @@ function publicJiangyouView(room, viewerId) {
     adjusted: Boolean(ownSubmission && ownSubmission.skill && ownSubmission.skill.adjusted),
     fromCity: ownSubmission && ownSubmission.skill ? ownSubmission.skill.fromCity || null : null,
     toCity: ownSubmission && ownSubmission.skill ? ownSubmission.skill.toCity || null : null,
-    totals: used && allSubmitted ? buildCityTotals(room) : null,
+    playerPlacements: used && allSubmitted ? buildJiangyouPlayerPlacements(room) : null,
   };
 }
 
@@ -606,7 +606,7 @@ function validateRoomSubmissions(room) {
     if (!submission) return;
     validateSubmission(room, player, submission);
     if (player.roleId === "jiangyou" && submission.skill && submission.skill.used && !submission.skill.adjusted) {
-      throw new Error("酱油鸡已使用技能，需要等全员提交后移动 1 个兵，完成后才能结算。");
+      throw new Error("酱油鸡已使用技能，需要等全员提交后确认调整，完成后才能结算。");
     }
   });
 }
@@ -619,16 +619,16 @@ function adjustJiangyou(room, player, payload) {
   if (!submission) throw new Error("酱油鸡需要先提交本轮出兵，并勾选使用技能。");
   if (!submission.skill || !submission.skill.used) throw new Error("本轮没有开启酱油鸡技能。");
   if (submission.skill.adjusted) throw new Error("酱油鸡本轮已经调整过，不能再次调整。");
-  if (!room.players.every((item) => Boolean(submissions[item.id]))) throw new Error("需要等待所有玩家提交后，酱油鸡才能查看总分布并调整。");
+  if (!room.players.every((item) => Boolean(submissions[item.id]))) throw new Error("需要等待所有玩家提交后，酱油鸡才能查看每名玩家的兵力分布并调整。");
 
   const fromCity = requireCity(payload.fromCity, room.cityCount, "酱油移出城池");
   const toCity = requireCity(payload.toCity, room.cityCount, "酱油移入城池");
-  if (fromCity === toCity) throw new Error("酱油鸡不能移动到同一个城池。");
-  if (numberOr(submission.placements[fromCity], 0) < 1) throw new Error(`${fromCity} 城没有可移动的 1 个兵。`);
-  if (numberOr(submission.placements[toCity], 0) + 1 > 12) throw new Error(`${toCity} 城移动后会超过单城 12 兵上限。`);
-
-  submission.placements[fromCity] = numberOr(submission.placements[fromCity], 0) - 1;
-  submission.placements[toCity] = numberOr(submission.placements[toCity], 0) + 1;
+  if (fromCity !== toCity) {
+    if (numberOr(submission.placements[fromCity], 0) < 1) throw new Error(`${fromCity} 城没有可移动的 1 个兵。`);
+    if (numberOr(submission.placements[toCity], 0) + 1 > 12) throw new Error(`${toCity} 城移动后会超过单城 12 兵上限。`);
+    submission.placements[fromCity] = numberOr(submission.placements[fromCity], 0) - 1;
+    submission.placements[toCity] = numberOr(submission.placements[toCity], 0) + 1;
+  }
   submission.skill = {
     ...submission.skill,
     adjusted: true,
@@ -647,16 +647,14 @@ function roundJiangyouAdjusted(room) {
   });
 }
 
-function buildCityTotals(room) {
-  const totals = {};
+function buildJiangyouPlayerPlacements(room) {
   const submissions = room.submissions[String(room.round)] || {};
-  for (let city = 1; city <= room.cityCount; city += 1) totals[city] = 0;
-  Object.values(submissions).forEach((submission) => {
-    for (let city = 1; city <= room.cityCount; city += 1) {
-      totals[city] += numberOr(submission.placements && submission.placements[city], 0);
-    }
-  });
-  return totals;
+  return room.players.map((player) => ({
+    playerId: player.id,
+    name: player.name,
+    roleShort: player.roleId ? ROLE_BY_ID[player.roleId].short : "",
+    placements: submissions[player.id] && submissions[player.id].placements ? submissions[player.id].placements : normalizePlacements({}, room.cityCount),
+  }));
 }
 
 function armyLimitFor(room, player, skill) {
@@ -941,7 +939,9 @@ function buildSkillEvents(players, skillByPlayer, ctx) {
     if (player.roleId === "jiangyou") return skill.used ? {
       ...base,
       status: skill.adjusted ? "已发动" : "待调整",
-      detail: skill.adjusted ? `查看总分布后，将 1 兵从 ${skill.fromCity} 城移动到 ${skill.toCity} 城。` : "已声明使用，等待全员提交后移动 1 兵。",
+      detail: skill.adjusted
+        ? (skill.fromCity === skill.toCity ? `查看每名玩家兵力分布后，选择原地不动（${skill.fromCity} 城）。` : `查看每名玩家兵力分布后，将 1 兵从 ${skill.fromCity} 城移动到 ${skill.toCity} 城。`)
+        : "已声明使用，等待全员提交后查看分布并调整。",
     } : base;
     if (player.roleId === "baizhan") {
       const correct = countBaizhanCorrect(players, skill.predictions, ctx.prePaojiaoTotals);

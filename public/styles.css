@@ -294,6 +294,20 @@ select {
   color: var(--accent-dark);
 }
 
+.jiangyou-players {
+  display: grid;
+  gap: 12px;
+}
+
+.jiangyou-player {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 10px;
+}
+
 .prediction-grid {
   display: grid;
   gap: 8px;

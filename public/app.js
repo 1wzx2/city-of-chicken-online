@@ -10,7 +10,7 @@ const ROLES = [
   { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "全局 3 次，第五/六轮合计 1 次；与一名玩家合作，双方各 17 兵，收益平分。" },
   { id: "paojiao", no: 8, short: "泡椒", name: "泡椒鸡爪", desc: "泡椒偷分前总榜唯一倒一时偷分，后两轮翻倍。" },
   { id: "dapan", no: 9, short: "大盘", name: "大盘鸡", desc: "全局 3 次，第五/六轮合计 1 次；额外 X 兵，未帮助得分兵扣分。" },
-  { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；提交后等全员提交，查看总分布并移动 1 个兵。" },
+  { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；提交后等全员提交，查看每名玩家兵力分布，再移动 1 个兵或原地不动。" },
   { id: "baizhan", no: 11, short: "白斩", name: "白斩鸡拼盘", desc: "预测泡椒偷分前总榜名次，每猜对一人 +2。" },
   { id: "koushui", no: 12, short: "口水", name: "口水鸡", desc: "军队可分成 0.5 使用。" },
 ];
@@ -338,7 +338,7 @@ function renderJiangyouForm(usage, checked) {
   const view = state.room.jiangyouView || {};
   const ownSubmitted = Boolean(state.room.ownSubmission);
   if (!ownSubmitted) {
-    return `${usage}<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；先正常提交，等所有人提交后再移动 1 个兵</label>`;
+    return `${usage}<label class="inline"><input type="checkbox" data-skill-check="used" ${checked("used")} /> 本轮使用酱油；先正常提交，等所有人提交后查看分布并调整</label>`;
   }
   if (!view.used) {
     return `<p class="muted">本轮没有开启酱油技能，按已提交的投兵表结算。</p>`;
@@ -346,39 +346,38 @@ function renderJiangyouForm(usage, checked) {
   if (!view.allSubmitted) {
     return `
       ${usage}
-      <div class="skill-usage bad">已开启酱油技能 · 等待所有玩家提交后，会显示各城总兵力分布。</div>
+      <div class="skill-usage bad">已开启酱油技能 · 等待所有玩家提交后，会显示每名玩家的兵力分布。</div>
     `;
   }
   if (view.adjusted) {
     return `
       ${usage}
-      <div class="skill-usage">已调整：${fmt(view.fromCity)} 城 -1，${fmt(view.toCity)} 城 +1。</div>
-      ${renderCityTotals(view.totals)}
+      <div class="skill-usage">${view.fromCity === view.toCity ? `已查看并选择原地不动：${fmt(view.fromCity)} 城。` : `已调整：${fmt(view.fromCity)} 城 -1，${fmt(view.toCity)} 城 +1。`}</div>
+      ${renderJiangyouPlayerPlacements(view.playerPlacements)}
     `;
   }
   return `
     ${usage}
     <div class="skill-form">
-      <div class="skill-usage">所有玩家已提交。查看各城总兵力后，移动自己 1 个兵。</div>
-      ${renderCityTotals(view.totals)}
+      <div class="skill-usage">所有玩家已提交。查看每名玩家兵力分布后，移动自己 1 个兵；也可以选择同一个城，表示原地不动。</div>
+      ${renderJiangyouPlayerPlacements(view.playerPlacements)}
       <div class="move-grid">
         <label>从<select data-jiangyou-move="fromCity">${cityOptionsHtml(state.jiangyouMove.fromCity || 1)}</select></label>
-        <label>到<select data-jiangyou-move="toCity">${cityOptionsHtml(state.jiangyouMove.toCity || 2)}</select></label>
-        <button id="adjustJiangyouBtn" class="secondary">确认移动 1 兵</button>
+        <label>到<select data-jiangyou-move="toCity">${cityOptionsHtml(state.jiangyouMove.toCity || state.jiangyouMove.fromCity || 1)}</select></label>
+        <button id="adjustJiangyouBtn" class="secondary">确认调整</button>
       </div>
     </div>
   `;
 }
 
-function renderCityTotals(totals) {
-  const rows = Array.from({ length: state.room.cityCount }, (_, index) => state.room.cityCount - index)
-    .map((city) => `
-      <div class="viewed-city">
-        <span>${city} 城总兵</span>
-        <strong>${fmt(totals && totals[city] ? totals[city] : 0)}</strong>
-      </div>
-    `).join("");
-  return `<div class="viewed-grid">${rows}</div>`;
+function renderJiangyouPlayerPlacements(players) {
+  if (!players || !players.length) return "";
+  return `<div class="jiangyou-players">${players.map((player) => `
+    <div class="jiangyou-player">
+      <strong>${escapeHtml(player.name)}${player.roleShort ? `（${escapeHtml(player.roleShort)}）` : ""}</strong>
+      ${renderViewedPlacements(player.placements)}
+    </div>
+  `).join("")}</div>`;
 }
 
 function renderViewedPlacements(placements) {
