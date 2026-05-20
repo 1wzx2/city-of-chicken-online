@@ -70,6 +70,11 @@ socket.on("roomState", (room) => {
   render();
 });
 
+socket.on("roomClosed", () => {
+  clearRoomSession();
+  alert("房间已解散，房间号和记录已删除。");
+});
+
 document.addEventListener("click", handleClick);
 document.addEventListener("input", handleInput);
 document.addEventListener("change", handleChange);
@@ -190,6 +195,7 @@ function renderHostPanel() {
         <button id="assignRolesBtn">随机分配角色</button>
         <button id="settleBtn" class="secondary">结算本轮</button>
         <button id="nextRoundBtn" class="secondary">进入下一轮</button>
+        <button id="dissolveRoomBtn" class="secondary danger">解散房间</button>
       </div>
       <p class="muted">重新随机角色会清空本轮提交。结算时未提交玩家按 0 兵处理。</p>
     </section>
@@ -441,6 +447,7 @@ function handleClick(event) {
   if (id === "assignRolesBtn") emitAction("assignRoles");
   if (id === "settleBtn") emitAction("settleRound");
   if (id === "nextRoundBtn") emitAction("nextRound");
+  if (id === "dissolveRoomBtn") dissolveRoom();
   if (id === "submitBtn") submitRound();
   if (id === "lockNongtangBtn") lockNongtangTarget();
   if (id === "adjustJiangyouBtn") adjustJiangyou();
@@ -578,11 +585,22 @@ function resumeRoom(showError) {
 
 function leaveRoom() {
   emit("leaveRoom", {}, () => {
-    state.room = null;
-    state.roomCode = "";
-    localStorage.removeItem("chicken_online_room");
-    render();
+    clearRoomSession();
   });
+}
+
+function dissolveRoom() {
+  if (!confirm("确定解散房间吗？房间号和所有记录会被彻底删除。")) return;
+  emit("dissolveRoom", {}, () => {
+    clearRoomSession();
+  });
+}
+
+function clearRoomSession() {
+  state.room = null;
+  state.roomCode = "";
+  localStorage.removeItem("chicken_online_room");
+  render();
 }
 
 function emitAction(action) {

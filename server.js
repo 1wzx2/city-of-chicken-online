@@ -1,8 +1,9 @@
-const express = require("express");
+﻿const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const crypto = require("crypto");
 const path = require("path");
+const { createRoomStore } = require("./storage");
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +16,7 @@ app.get("/health", (req, res) => {
 
 app.use(express.static(path.join(__dirname, "public")));
 
+const roomStore = createRoomStore();
 const rooms = new Map();
 const socketMeta = new Map();
 
@@ -44,17 +46,17 @@ const SKILL_LIMITS = {
 };
 
 io.on("connection", (socket) => {
-  socket.on("createRoom", (payload, reply) => safeReply(reply, () => {
-    const room = createRoom(cleanName(payload.name, "房主"));
+  socket.on("createRoom", (payload, reply) => safeReply(reply, async () => {
+    const room = await createRoom(cleanName(payload.name, "房主"));
     const player = room.players[0];
     attachSocket(socket, room, player.id);
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
   }));
 
-  socket.on("joinRoom", (payload, reply) => safeReply(reply, () => {
+  socket.on("joinRoom", (payload, reply) => safeReply(reply, async () => {
     const code = String(payload.code || "").trim().toUpperCase();
-    const room = rooms.get(code);
+    const room = await loadRoom(code);
     if (!room) throw new Error("房间不存在");
     const playerId = payload.playerId && room.players.some((p) => p.id === payload.playerId)
       ? payload.playerId
@@ -69,31 +71,32 @@ io.on("connection", (socket) => {
       room.players.push(player);
     }
     attachSocket(socket, room, player.id);
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
   }));
 
-  socket.on("keepAlive", (payload, reply) => safeReply(reply, () => {
-    const { room, player } = requireOrRestoreMeta(socket, payload);
+  socket.on("keepAlive", (payload, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireOrRestoreMeta(socket, payload);
     player.connected = true;
     player.lastSeenAt = Date.now();
+    await saveRoom(room);
     return { code: room.code };
   }));
 
-  socket.on("rejoinPlayer", (payload, reply) => safeReply(reply, () => {
+  socket.on("rejoinPlayer", (payload, reply) => safeReply(reply, async () => {
     const playerId = String(payload.playerId || "").trim();
-    const found = findRoomByPlayerId(playerId);
+    const found = await findRoomByPlayerId(playerId);
     if (!found) throw new Error("没有找到上次加入的房间");
     const { room, player } = found;
     player.name = cleanName(payload.name, player.name);
     player.connected = true;
     attachSocket(socket, room, player.id);
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id), playerId: player.id, code: room.code };
   }));
 
-  socket.on("assignRoles", (_, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("assignRoles", (_, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
     assertHost(room, player.id);
     const roles = shuffle([...ROLES]);
     room.players.forEach((p, index) => {
@@ -103,12 +106,12 @@ io.on("connection", (socket) => {
     room.submissions[String(room.round)] = {};
     room.nongtangTargets[String(room.round)] = {};
     room.currentResult = null;
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
 
-  socket.on("setNongtangTarget", (payload, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("setNongtangTarget", (payload, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
     if (player.roleId !== "nongtang") throw new Error("只有浓鸡汤可以查看玩家出兵。");
     const roundKey = String(room.round);
     room.nongtangTargets = room.nongtangTargets || {};
@@ -117,12 +120,12 @@ io.on("connection", (socket) => {
     const target = requireOtherPlayer(room, player, payload.targetId, "浓汤查看对象");
     if (hasNongtangViewedBefore(room, player.id, target.id)) throw new Error("浓鸡汤不能重复选择同一个玩家查看。");
     room.nongtangTargets[roundKey][player.id] = target.id;
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
 
-  socket.on("submitRound", (payload, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("submitRound", (payload, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
     const roundKey = String(room.round);
     room.submissions[roundKey] = room.submissions[roundKey] || {};
     if (roundJiangyouAdjusted(room)) throw new Error("酱油鸡已经完成调整，本轮提交已锁定，不能再修改。");
@@ -138,29 +141,29 @@ io.on("connection", (socket) => {
       submittedAt: Date.now(),
     };
     room.currentResult = null;
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
 
-  socket.on("adjustJiangyou", (payload, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("adjustJiangyou", (payload, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
     adjustJiangyou(room, player, payload);
     room.currentResult = null;
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
 
-  socket.on("settleRound", (_, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("settleRound", (_, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
     assertHost(room, player.id);
     validateRoomSubmissions(room);
     room.currentResult = calculateRoom(room);
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
 
-  socket.on("nextRound", (_, reply) => safeReply(reply, () => {
-    const { room, player } = requireMeta(socket);
+  socket.on("nextRound", (_, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
     assertHost(room, player.id);
     if (room.currentResult) {
       room.players.forEach((p) => {
@@ -171,40 +174,51 @@ io.on("connection", (socket) => {
     room.submissions[String(room.round)] = {};
     room.nongtangTargets[String(room.round)] = {};
     room.currentResult = null;
-    broadcast(room.code);
+    await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
 
-  socket.on("leaveRoom", (_, reply) => safeReply(reply, () => {
+  socket.on("leaveRoom", (_, reply) => safeReply(reply, async () => {
     const meta = socketMeta.get(socket.id);
     if (!meta) return {};
     socket.leave(meta.code);
     socketMeta.delete(socket.id);
-    const room = rooms.get(meta.code);
+    const room = await loadRoom(meta.code);
     if (room) {
+      if (room.hostId === meta.playerId) {
+        await deleteRoom(room.code);
+        return { dissolved: true };
+      }
       const stillConnected = [...socketMeta.values()].some((item) => item.code === meta.code && item.playerId === meta.playerId);
       const player = room.players.find((p) => p.id === meta.playerId);
       if (player && !stillConnected) player.connected = false;
-      broadcast(room.code);
+      await saveAndBroadcast(room);
     }
     return {};
   }));
 
-  socket.on("disconnect", () => {
+  socket.on("dissolveRoom", (_, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
+    assertHost(room, player.id);
+    await deleteRoom(room.code);
+    return { dissolved: true };
+  }));
+
+  socket.on("disconnect", async () => {
     const meta = socketMeta.get(socket.id);
     socketMeta.delete(socket.id);
     if (!meta) return;
-    const room = rooms.get(meta.code);
+    const room = await loadRoom(meta.code);
     if (!room) return;
     const stillConnected = [...socketMeta.values()].some((item) => item.code === meta.code && item.playerId === meta.playerId);
     const player = room.players.find((p) => p.id === meta.playerId);
     if (player && !stillConnected) player.connected = false;
-    broadcast(room.code);
+    await saveAndBroadcast(room);
   });
 });
 
-function createRoom(hostName) {
-  const code = makeRoomCode();
+async function createRoom(hostName) {
+  const code = await makeRoomCode();
   const host = makePlayer(randomId(), hostName);
   const room = {
     code,
@@ -218,7 +232,7 @@ function createRoom(hostName) {
     currentResult: null,
     createdAt: Date.now(),
   };
-  rooms.set(code, room);
+  await saveRoom(room);
   return room;
 }
 
@@ -226,12 +240,19 @@ function makePlayer(id, name) {
   return { id, name, roleId: "", history: 0, connected: true };
 }
 
-function findRoomByPlayerId(playerId) {
+async function findRoomByPlayerId(playerId) {
   if (!playerId) return null;
   for (const room of rooms.values()) {
     const player = room.players.find((item) => item.id === playerId);
     if (player) return { room, player };
   }
+  const room = await roomStore.findRoomByPlayerId(playerId);
+  if (!room) return null;
+  normalizeRoom(room);
+  markPlayersDisconnected(room);
+  rooms.set(room.code, room);
+  const player = room.players.find((item) => item.id === playerId);
+  if (player) return { room, player };
   return null;
 }
 
@@ -240,8 +261,72 @@ function attachSocket(socket, room, playerId) {
   socketMeta.set(socket.id, { code: room.code, playerId });
 }
 
-function broadcast(code) {
-  const room = rooms.get(code);
+function normalizeRoom(room) {
+  room.code = String(room.code || "").trim().toUpperCase();
+  room.hostId = room.hostId || "";
+  room.status = room.status || "lobby";
+  room.round = numberOr(room.round, 1);
+  room.cityCount = numberOr(room.cityCount, 16);
+  room.players = Array.isArray(room.players) ? room.players : [];
+  room.submissions = room.submissions && typeof room.submissions === "object" ? room.submissions : {};
+  room.nongtangTargets = room.nongtangTargets && typeof room.nongtangTargets === "object" ? room.nongtangTargets : {};
+  room.currentResult = room.currentResult || null;
+  room.createdAt = room.createdAt || Date.now();
+  room.players.forEach((player) => {
+    player.id = String(player.id || "");
+    player.name = cleanName(player.name, "玩家");
+    player.roleId = player.roleId || "";
+    player.history = numberOr(player.history, 0);
+    player.connected = Boolean(player.connected);
+  });
+  return room;
+}
+
+function markPlayersDisconnected(room) {
+  room.players.forEach((player) => {
+    player.connected = false;
+  });
+}
+
+async function loadRoom(code) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (!normalizedCode) return null;
+  const cached = rooms.get(normalizedCode);
+  if (cached) return cached;
+  const room = await roomStore.getRoom(normalizedCode);
+  if (!room) return null;
+  normalizeRoom(room);
+  markPlayersDisconnected(room);
+  rooms.set(room.code, room);
+  return room;
+}
+
+async function saveRoom(room) {
+  normalizeRoom(room);
+  rooms.set(room.code, room);
+  await roomStore.saveRoom(room);
+}
+
+async function saveAndBroadcast(room) {
+  await saveRoom(room);
+  await broadcast(room.code);
+}
+
+async function deleteRoom(code) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (!normalizedCode) return;
+  rooms.delete(normalizedCode);
+  for (const [socketId, meta] of [...socketMeta.entries()]) {
+    if (meta.code !== normalizedCode) continue;
+    io.to(socketId).emit("roomClosed", { code: normalizedCode });
+    io.sockets.sockets.get(socketId)?.leave(normalizedCode);
+    socketMeta.delete(socketId);
+  }
+  await roomStore.deleteRoom(normalizedCode);
+}
+
+async function broadcast(code) {
+  const room = await loadRoom(code);
   if (!room) return;
   room.players.forEach((player) => {
     const sockets = [...socketMeta.entries()].filter(([, meta]) => meta.code === code && meta.playerId === player.id);
@@ -350,24 +435,25 @@ function publicSkillUsage(room, playerId) {
   };
 }
 
-function requireMeta(socket) {
+async function requireMeta(socket) {
   const meta = socketMeta.get(socket.id);
   if (!meta) throw new Error("还没有加入房间");
-  const room = rooms.get(meta.code);
+  const room = await loadRoom(meta.code);
   if (!room) throw new Error("房间不存在");
   const player = room.players.find((p) => p.id === meta.playerId);
   if (!player) throw new Error("玩家不存在");
   return { room, player };
 }
 
-function requireOrRestoreMeta(socket, payload) {
+async function requireOrRestoreMeta(socket, payload) {
   const meta = socketMeta.get(socket.id);
   if (meta) return requireMeta(socket);
   const code = String((payload && payload.code) || "").trim().toUpperCase();
   const playerId = String((payload && payload.playerId) || "").trim();
-  const found = code && rooms.has(code)
-    ? { room: rooms.get(code), player: rooms.get(code).players.find((item) => item.id === playerId) }
-    : findRoomByPlayerId(playerId);
+  const codedRoom = code ? await loadRoom(code) : null;
+  const found = codedRoom
+    ? { room: codedRoom, player: codedRoom.players.find((item) => item.id === playerId) }
+    : await findRoomByPlayerId(playerId);
   if (!found || !found.room || !found.player) throw new Error("还没有加入房间");
   attachSocket(socket, found.room, found.player.id);
   return found;
@@ -377,9 +463,9 @@ function assertHost(room, playerId) {
   if (room.hostId !== playerId) throw new Error("只有房主可以操作");
 }
 
-function safeReply(reply, fn) {
+async function safeReply(reply, fn) {
   try {
-    const result = fn();
+    const result = await fn();
     if (typeof reply === "function") reply({ ok: true, ...result });
   } catch (error) {
     if (typeof reply === "function") reply({ ok: false, message: error.message || "操作失败" });
@@ -925,11 +1011,11 @@ function normalizePlacements(input, cityCount) {
   return placements;
 }
 
-function makeRoomCode() {
+async function makeRoomCode() {
   let code = "";
   do {
     code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  } while (rooms.has(code));
+  } while (rooms.has(code) || await roomStore.roomCodeExists(code));
   return code;
 }
 
@@ -977,6 +1063,12 @@ function fmt(value) {
   return Number.isInteger(number) ? number : Number(number.toFixed(2));
 }
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`City of Chicken online server: http://localhost:${PORT}`);
+roomStore.init().then(() => {
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`City of Chicken online server: http://localhost:${PORT}`);
+  });
+}).catch((error) => {
+  console.error("Failed to initialize room storage", error);
+  process.exit(1);
 });
+
