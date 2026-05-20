@@ -137,6 +137,7 @@ function renderRoom() {
       </section>
       ${isHost ? renderHostPanel() : ""}
       ${renderAllianceAnnouncement()}
+      ${renderYuanyangQuickPanel(role)}
       <section class="panel">
         <h2>玩家</h2>
         <div class="player-list">${room.players.map(renderPlayer).join("")}</div>
@@ -210,6 +211,31 @@ function renderAllianceAnnouncement() {
     <section class="panel">
       <h2>鸳鸯合作</h2>
       <div class="skill-usage">${escapeHtml(alliance.yuanyangName)} 本轮绑定 ${escapeHtml(alliance.partnerName)}，双方各 17 兵，收益平分。</div>
+    </section>
+  `;
+}
+
+function renderYuanyangQuickPanel(role) {
+  if (!role || role.id !== "yuanyang") return "";
+  const players = state.room.players.filter((player) => player.id !== state.playerId);
+  const playerOptions = `<option value="">请选择</option>${players.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}`;
+  const binding = state.room.yuanyangBinding || {};
+  if (binding.partnerId) {
+    return `
+      <section class="panel yuanyang-panel">
+        <h2>鸳鸯绑定</h2>
+        <div class="skill-usage">本轮已绑定 ${escapeHtml(binding.partnerName)}。双方各 17 兵，可以商量后再提交投兵。</div>
+      </section>
+    `;
+  }
+  return `
+    <section class="panel yuanyang-panel">
+      <h2>鸳鸯绑定</h2>
+      <div class="skill-form">
+        <label>合作玩家<select data-skill="partnerId">${markSelected(playerOptions, state.skill.partnerId)}</select></label>
+        <button id="lockYuanyangBtn" class="secondary skill-action">锁定合作玩家</button>
+      </div>
+      <p class="muted">先锁定再商量出兵。锁定后全场公示，被绑定玩家本轮不能使用自己的技能。</p>
     </section>
   `;
 }
@@ -339,7 +365,7 @@ function renderYuanyangForm(usage, playerOptions) {
     ${usage}
     <div class="skill-form yuanyang-form">
       <label>先绑定合作玩家<select data-skill="partnerId">${markSelected(playerOptions, state.skill.partnerId)}</select></label>
-      <button id="lockYuanyangBtn" class="secondary skill-action">锁定合作玩家</button>
+      <button id="lockYuanyangBtnMain" class="secondary skill-action">锁定合作玩家</button>
       <p class="muted">锁定后会全场公示，双方本轮各 17 兵；被绑定玩家不能使用自己的技能。</p>
     </div>
   `;
@@ -477,7 +503,7 @@ function handleClick(event) {
   if (id === "dissolveRoomBtn") dissolveRoom();
   if (id === "submitBtn") submitRound();
   if (id === "lockNongtangBtn") lockNongtangTarget();
-  if (id === "lockYuanyangBtn") lockYuanyangPartner();
+  if (id === "lockYuanyangBtn" || id === "lockYuanyangBtnMain") lockYuanyangPartner();
   if (id === "adjustJiangyouBtn") adjustJiangyou();
   if (event.target.dataset.tab) {
     state.activeTab = event.target.dataset.tab;
