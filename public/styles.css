@@ -492,6 +492,29 @@ select {
   overflow-wrap: anywhere;
 }
 
+.round-logs {
+  display: grid;
+  gap: 12px;
+}
+
+.log-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.log-card summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--accent-dark);
+}
+
+.log-card h3 {
+  margin: 14px 0 8px;
+  font-size: 15px;
+}
+
 .tabs {
   display: flex;
   gap: 8px;

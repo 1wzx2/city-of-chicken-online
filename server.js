@@ -177,6 +177,7 @@ io.on("connection", (socket) => {
     if (room.currentResult) throw new Error("本轮已经结算，请进入下一轮。");
     validateRoomSubmissions(room);
     room.currentResult = calculateRoom(room);
+    saveRoundLog(room);
     await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
@@ -250,6 +251,7 @@ async function createRoom(hostName) {
     submissions: {},
     nongtangTargets: {},
     yuanyangBindings: {},
+    roundLogs: [],
     currentResult: null,
     createdAt: Date.now(),
   };
@@ -292,6 +294,7 @@ function normalizeRoom(room) {
   room.submissions = room.submissions && typeof room.submissions === "object" ? room.submissions : {};
   room.nongtangTargets = room.nongtangTargets && typeof room.nongtangTargets === "object" ? room.nongtangTargets : {};
   room.yuanyangBindings = room.yuanyangBindings && typeof room.yuanyangBindings === "object" ? room.yuanyangBindings : {};
+  room.roundLogs = Array.isArray(room.roundLogs) ? room.roundLogs : [];
   room.currentResult = room.currentResult || null;
   room.createdAt = room.createdAt || Date.now();
   room.players.forEach((player) => {
@@ -383,6 +386,7 @@ function publicRoom(room, viewerId) {
     jiangyouView: publicJiangyouView(room, viewerId),
     leaderboard: buildLiveLeaderboard(room),
     currentResult: room.currentResult,
+    roundLogs: room.roundLogs || [],
   };
 }
 
@@ -741,6 +745,25 @@ function buildCityPlacementRows(players, raw, adjusted, city) {
     })
     .filter((item) => Number(item.placed) > 0 || Number(item.adjusted) > 0)
     .sort((a, b) => Number(b.adjusted) - Number(a.adjusted) || Number(b.placed) - Number(a.placed) || a.name.localeCompare(b.name, "zh-Hans-CN"));
+}
+
+function saveRoundLog(room) {
+  if (!room.currentResult) return;
+  room.roundLogs = Array.isArray(room.roundLogs) ? room.roundLogs : [];
+  const log = {
+    round: room.round,
+    settledAt: Date.now(),
+    ranking: room.currentResult.ranking,
+    skillEvents: room.currentResult.skillEvents,
+    cityResults: room.currentResult.cityResults,
+  };
+  const index = room.roundLogs.findIndex((item) => item.round === room.round);
+  if (index >= 0) {
+    room.roundLogs[index] = log;
+  } else {
+    room.roundLogs.push(log);
+  }
+  room.roundLogs.sort((a, b) => a.round - b.round);
 }
 
 function validateSkillLimit(room, player, skill, options = {}) {

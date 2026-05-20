@@ -463,10 +463,12 @@ function renderResults(result) {
         <button data-tab="ranking" class="${state.activeTab === "ranking" ? "active" : ""}">${final ? "总排名" : "排名"}</button>
         <button data-tab="skills" class="${state.activeTab === "skills" ? "active" : ""}">技能</button>
         <button data-tab="cities" class="${state.activeTab === "cities" ? "active" : ""}">城池</button>
+        <button data-tab="logs" class="${state.activeTab === "logs" ? "active" : ""}">日志</button>
       </div>
       <div class="${state.activeTab === "ranking" ? "" : "hidden"}">${renderRanking(result)}</div>
       <div class="${state.activeTab === "skills" ? "" : "hidden"}">${renderSkillEvents(result)}</div>
       <div class="${state.activeTab === "cities" ? "" : "hidden"}">${renderCityResults(result)}</div>
+      <div class="${state.activeTab === "logs" ? "" : "hidden"}">${renderRoundLogs()}</div>
     </section>
   `;
 }
@@ -510,6 +512,22 @@ function renderCityResults(result) {
       </div>
       <div class="formula">${escapeHtml(city.formula)}</div>
     </div>
+  `).join("")}</div>`;
+}
+
+function renderRoundLogs() {
+  const logs = state.room && state.room.roundLogs ? [...state.room.roundLogs].sort((a, b) => b.round - a.round) : [];
+  if (!logs.length) return `<p class="muted">还没有结算日志。</p>`;
+  return `<div class="round-logs">${logs.map((log) => `
+    <details class="log-card" ${log.round === state.room.round ? "open" : ""}>
+      <summary>第 ${log.round} 轮 · ${formatTime(log.settledAt)}</summary>
+      <h3>排名</h3>
+      ${renderRanking(log)}
+      <h3>技能</h3>
+      ${renderSkillEvents(log)}
+      <h3>城池分布</h3>
+      ${renderCityResults(log)}
+    </details>
   `).join("")}</div>`;
 }
 
@@ -917,6 +935,12 @@ function numberOr(value, fallback) {
 function fmt(value) {
   const number = Math.round(Number(value) * 1000000) / 1000000;
   return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(2)));
+}
+
+function formatTime(value) {
+  const date = new Date(numberOr(value, Date.now()));
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function formatInput(value) {
