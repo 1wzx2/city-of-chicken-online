@@ -105,6 +105,7 @@ io.on("connection", (socket) => {
     room.status = "playing";
     room.submissions[String(room.round)] = {};
     room.nongtangTargets[String(room.round)] = {};
+    room.yuanyangBindings[String(room.round)] = {};
     room.currentResult = null;
     await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
@@ -120,6 +121,21 @@ io.on("connection", (socket) => {
     const target = requireOtherPlayer(room, player, payload.targetId, "浓汤查看对象");
     if (hasNongtangViewedBefore(room, player.id, target.id)) throw new Error("浓鸡汤不能重复选择同一个玩家查看。");
     room.nongtangTargets[roundKey][player.id] = target.id;
+    await saveAndBroadcast(room);
+    return { room: publicRoom(room, player.id) };
+  }));
+
+  socket.on("setYuanyangPartner", (payload, reply) => safeReply(reply, async () => {
+    const { room, player } = await requireMeta(socket);
+    if (player.roleId !== "yuanyang") throw new Error("只有鸳鸯鸡可以绑定合作玩家。");
+    const roundKey = String(room.round);
+    room.yuanyangBindings = room.yuanyangBindings || {};
+    room.yuanyangBindings[roundKey] = room.yuanyangBindings[roundKey] || {};
+    if (room.submissions[roundKey] && room.submissions[roundKey][player.id]) throw new Error("你已经提交本轮出兵，不能再更换合作对象。");
+    const target = requireOtherPlayer(room, player, payload.partnerId, "鸳鸯合作玩家");
+    validateSkillLimit(room, player, { active: true }, { excludeRound: room.round, includeYuanyangBinding: true });
+    room.yuanyangBindings[roundKey][player.id] = target.id;
+    room.currentResult = null;
     await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
   }));
@@ -173,6 +189,7 @@ io.on("connection", (socket) => {
     room.round = Math.min(6, room.round + 1);
     room.submissions[String(room.round)] = {};
     room.nongtangTargets[String(room.round)] = {};
+    room.yuanyangBindings[String(room.round)] = {};
     room.currentResult = null;
     await saveAndBroadcast(room);
     return { room: publicRoom(room, player.id) };
@@ -229,6 +246,7 @@ async function createRoom(hostName) {
     players: [host],
     submissions: {},
     nongtangTargets: {},
+    yuanyangBindings: {},
     currentResult: null,
     createdAt: Date.now(),
   };
@@ -270,6 +288,7 @@ function normalizeRoom(room) {
   room.players = Array.isArray(room.players) ? room.players : [];
   room.submissions = room.submissions && typeof room.submissions === "object" ? room.submissions : {};
   room.nongtangTargets = room.nongtangTargets && typeof room.nongtangTargets === "object" ? room.nongtangTargets : {};
+  room.yuanyangBindings = room.yuanyangBindings && typeof room.yuanyangBindings === "object" ? room.yuanyangBindings : {};
   room.currentResult = room.currentResult || null;
   room.createdAt = room.createdAt || Date.now();
   room.players.forEach((player) => {
@@ -356,6 +375,7 @@ function publicRoom(room, viewerId) {
     skillUsage: publicSkillUsage(room, viewerId),
     allianceAnnouncement: publicAllianceAnnouncement(room),
     allianceInvite: publicAllianceInvite(room, viewerId),
+    yuanyangBinding: publicYuanyangBinding(room, viewerId),
     nongtangView: publicNongtangView(room, viewerId),
     jiangyouView: publicJiangyouView(room, viewerId),
     leaderboard: buildLiveLeaderboard(room),
@@ -392,6 +412,17 @@ function publicAllianceAnnouncement(room) {
   return {
     yuanyangId: alliance.yuanyangPlayer.id,
     yuanyangName: alliance.yuanyangPlayer.name,
+    partnerId: alliance.partner.id,
+    partnerName: alliance.partner.name,
+  };
+}
+
+function publicYuanyangBinding(room, viewerId) {
+  const player = room.players.find((item) => item.id === viewerId);
+  if (!player || player.roleId !== "yuanyang") return null;
+  const alliance = currentAllianceAnnouncement(room);
+  if (!alliance) return { partnerId: "", partnerName: "" };
+  return {
     partnerId: alliance.partner.id,
     partnerName: alliance.partner.name,
   };
@@ -486,6 +517,17 @@ async function safeReply(reply, fn) {
 
 function validateSubmission(room, player, submission) {
   if (!player.roleId) throw new Error("还没有分配角色，不能提交本轮。");
+  if (player.roleId === "yuanyang") {
+    const alliance = currentAllianceAnnouncement(room);
+    if (alliance && alliance.yuanyangPlayer.id === player.id) {
+      submission.skill = { ...(submission.skill || {}), active: true, partnerId: alliance.partner.id };
+    } else if (submission.skill && submission.skill.active) {
+      throw new Error("鸳鸯鸡需要先绑定合作玩家，再提交本轮出兵。");
+    }
+  }
+  if (currentAllianceInvite(room, player.id) && hasDeclaredSkill(player.roleId, submission.skill || {})) {
+    throw new Error("你已被鸳鸯鸡绑定，本轮不能使用自己的技能。");
+  }
   validateSkill(room, player, submission.skill || {});
   if (player.roleId === "nongtang") {
     const targetId = requireNongtangReady(room, player);
@@ -513,13 +555,7 @@ function validatePlacements(room, player, placements, skill) {
 function validateSkill(room, player, skill) {
   const roleId = player.roleId;
   if (currentAllianceInvite(room, player.id)) return;
-  if (usesLimitedSkill(roleId, skill)) {
-    const limit = SKILL_LIMITS[roleId];
-    if (limit.rounds && !limit.rounds.includes(room.round)) throw new Error(`${ROLE_BY_ID[roleId].name}只能在第 ${limit.rounds.join("、")} 轮使用技能。`);
-    const counts = countSkillUses(room, player.id, roleId, { excludeRound: room.round, includeSkill: skill });
-    if (limit.total && counts.total > limit.total) throw new Error(`${ROLE_BY_ID[roleId].name}技能次数已用完：${limit.label}。`);
-    if (limit.late && counts.late > limit.late) throw new Error(`${ROLE_BY_ID[roleId].name}在第五/六轮只能使用一次技能。`);
-  }
+  validateSkillLimit(room, player, skill);
 
   if (roleId === "zha" && skill.active) {
     requireCity(skill.city, room.cityCount, "炸鸡城池");
@@ -592,15 +628,29 @@ function requireOtherPlayer(room, player, targetId, label) {
 function countSkillUses(room, playerId, roleId, options = {}) {
   let total = 0;
   let late = 0;
+  if (roleId === "yuanyang") {
+    Object.entries(room.yuanyangBindings || {}).forEach(([roundKey, bindings]) => {
+      const round = Number(roundKey);
+      if (round === options.excludeRound) return;
+      if (!bindings || !bindings[playerId]) return;
+      total += 1;
+      if (isLateRound(round)) late += 1;
+    });
+  }
   Object.entries(room.submissions).forEach(([roundKey, submissions]) => {
     const round = Number(roundKey);
     if (round === options.excludeRound) return;
+    if (roleId === "yuanyang" && room.yuanyangBindings && room.yuanyangBindings[roundKey] && room.yuanyangBindings[roundKey][playerId]) return;
     const submission = submissions[playerId];
     if (!submission || !usesLimitedSkill(roleId, submission.skill || {})) return;
     total += 1;
     if (isLateRound(round)) late += 1;
   });
-  if (options.includeSkill && usesLimitedSkill(roleId, options.includeSkill)) {
+  if (options.includeSkill && usesLimitedSkill(roleId, options.includeSkill) && !(roleId === "yuanyang" && options.includeYuanyangBinding)) {
+    total += 1;
+    if (isLateRound(room.round)) late += 1;
+  }
+  if (options.includeYuanyangBinding && roleId === "yuanyang") {
     total += 1;
     if (isLateRound(room.round)) late += 1;
   }
@@ -669,8 +719,20 @@ function buildJiangyouPlayerPlacements(room) {
   }));
 }
 
+function validateSkillLimit(room, player, skill, options = {}) {
+  const roleId = player.roleId;
+  if (!usesLimitedSkill(roleId, skill)) return;
+  const limit = SKILL_LIMITS[roleId];
+  if (!limit) return;
+  if (limit.rounds && !limit.rounds.includes(room.round)) throw new Error(`${ROLE_BY_ID[roleId].name}只能在第 ${limit.rounds.join("、")} 轮使用技能。`);
+  const counts = countSkillUses(room, player.id, roleId, { excludeRound: room.round, includeSkill: skill, includeYuanyangBinding: options.includeYuanyangBinding });
+  if (limit.total && counts.total > limit.total) throw new Error(`${ROLE_BY_ID[roleId].name}技能次数已用完：${limit.label}。`);
+  if (limit.late && counts.late > limit.late) throw new Error(`${ROLE_BY_ID[roleId].name}在第五/六轮只能使用一次技能。`);
+}
+
 function armyLimitFor(room, player, skill) {
-  if (player.roleId === "yuanyang" && skill && skill.active) return 17;
+  const alliance = currentAllianceAnnouncement(room);
+  if (alliance && alliance.yuanyangPlayer.id === player.id) return 17;
   const invite = currentAllianceInvite(room, player.id);
   if (invite) return 17;
   if (player.roleId === "dapan" && skill && skill.active) return 12 + Math.min(12, Math.max(0, numberOr(skill.extra, 0)));
@@ -686,10 +748,13 @@ function currentAllianceInvite(room, viewerId) {
 function currentAllianceAnnouncement(room) {
   const yuanyangPlayer = room.players.find((player) => player.roleId === "yuanyang");
   if (!yuanyangPlayer) return null;
-  const yuanyangSubmission = (room.submissions[String(room.round)] || {})[yuanyangPlayer.id];
+  const roundKey = String(room.round);
+  const boundPartnerId = room.yuanyangBindings && room.yuanyangBindings[roundKey] && room.yuanyangBindings[roundKey][yuanyangPlayer.id];
+  const yuanyangSubmission = (room.submissions[roundKey] || {})[yuanyangPlayer.id];
   const skill = yuanyangSubmission ? yuanyangSubmission.skill || {} : {};
-  if (!skill.active || !skill.partnerId || skill.partnerId === yuanyangPlayer.id) return null;
-  const partner = room.players.find((player) => player.id === skill.partnerId);
+  const partnerId = boundPartnerId || (skill.active ? skill.partnerId : "");
+  if (!partnerId || partnerId === yuanyangPlayer.id) return null;
+  const partner = room.players.find((player) => player.id === partnerId);
   if (!partner) return null;
   return { yuanyangPlayer, partner };
 }
@@ -698,6 +763,15 @@ function usesLimitedSkill(roleId, skill) {
   if (!SKILL_LIMITS[roleId]) return false;
   if (roleId === "jiangyou") return Boolean(skill.used);
   return Boolean(skill.active);
+}
+
+function hasDeclaredSkill(roleId, skill) {
+  if (!skill || typeof skill !== "object") return false;
+  if (usesLimitedSkill(roleId, skill)) return true;
+  if (roleId === "nongtang") return Boolean(skill.targetId);
+  if (roleId === "zuozong") return Boolean(skill.targetId);
+  if (roleId === "baizhan") return Boolean(skill.predictions && Object.keys(skill.predictions).length);
+  return false;
 }
 
 function isLateRound(round) {
@@ -730,16 +804,11 @@ function calculateRoom(room) {
   });
 
   const rolePlayer = (roleId) => players.find((player) => player.roleId === roleId);
-  const yuanyangPlayer = rolePlayer("yuanyang");
-  const yuanyangSkill = yuanyangPlayer ? skillByPlayer[yuanyangPlayer.id] : {};
-  const yuanyangActive =
-    Boolean(yuanyangPlayer) &&
-    Boolean(yuanyangSkill.active) &&
-    Boolean(yuanyangSkill.partnerId) &&
-    Boolean(playerById[yuanyangSkill.partnerId]) &&
-    yuanyangSkill.partnerId !== yuanyangPlayer.id;
-  const allianceMembers = yuanyangActive ? [yuanyangPlayer.id, yuanyangSkill.partnerId] : [];
-  const blockedSkillPlayerIds = new Set(yuanyangActive ? [yuanyangSkill.partnerId] : []);
+  const alliance = currentAllianceAnnouncement(room);
+  const yuanyangPlayer = alliance ? alliance.yuanyangPlayer : rolePlayer("yuanyang");
+  const yuanyangActive = Boolean(alliance);
+  const allianceMembers = yuanyangActive ? [alliance.yuanyangPlayer.id, alliance.partner.id] : [];
+  const blockedSkillPlayerIds = new Set(yuanyangActive ? [alliance.partner.id] : []);
 
   const actualValues = {};
   cityNums.forEach((city) => {
@@ -844,6 +913,7 @@ function calculateRoom(room) {
     playerById,
     blockedSkillPlayerIds,
     yuanyangActive,
+    yuanyangPartnerId: alliance ? alliance.partner.id : "",
     bombActive,
     bombCity,
     huangCity,
@@ -953,7 +1023,7 @@ function buildSkillEvents(players, skillByPlayer, ctx) {
     if (player.roleId === "nongtang") return skill.targetId ? { ...base, status: "已发动", detail: `查看 ${targetName(ctx.playerById, skill.targetId)}。` } : base;
     if (player.roleId === "zuozong") return skill.targetId ? { ...base, status: hasBreakdown(player.id, "左宗", ctx.breakdowns) ? "猜中" : "未猜中", detail: `猜 ${targetName(ctx.playerById, skill.targetId)}。` } : base;
     if (player.roleId === "huang") return skill.active ? { ...base, status: "已发动", detail: `指定 ${ctx.huangCity} 城，胜者翻倍，失败进城者扣分。` } : base;
-    if (player.roleId === "yuanyang") return skill.active ? { ...base, status: ctx.yuanyangActive ? "已发动" : "未生效", detail: ctx.yuanyangActive ? `与 ${targetName(ctx.playerById, skill.partnerId)} 合作，收益平分。` : "合作玩家无效。" } : base;
+    if (player.roleId === "yuanyang") return ctx.yuanyangActive ? { ...base, status: "已发动", detail: `与 ${targetName(ctx.playerById, ctx.yuanyangPartnerId)} 合作，收益平分。` } : base;
     if (player.roleId === "paojiao") return { ...base, status: hasBreakdown(player.id, "泡椒偷分", ctx.breakdowns) ? "已触发" : "未触发", detail: `泡椒偷分前累计 ${fmt(ctx.prePaojiaoTotals[player.id])}。` };
     if (player.roleId === "dapan") return skill.active ? { ...base, status: "已发动", detail: `额外 ${fmt(skill.extra || 0)} 兵，扣分 ${fmt(Math.abs(pointsByLabel(player.id, "大盘", ctx.breakdowns)))}。` } : base;
     if (player.roleId === "jiangyou") return skill.used ? {

@@ -7,7 +7,7 @@ const ROLES = [
   { id: "nongtang", no: 4, short: "浓汤", name: "浓鸡汤", desc: "先锁定一名玩家，等对方提交后查看其出兵，再提交自己的出兵。" },
   { id: "zuozong", no: 5, short: "左宗", name: "左宗鸡", desc: "猜中泡椒偷分前本轮倒数三名之一 +10。" },
   { id: "huang", no: 6, short: "黄焖", name: "黄焖鸡米饭", desc: "全局 3 次，第五/六轮合计 1 次；指定城池胜者翻倍，失败进城者扣分。" },
-  { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "全局 3 次，第五/六轮合计 1 次；与一名玩家合作，双方各 17 兵，收益平分。" },
+  { id: "yuanyang", no: 7, short: "鸳鸯", name: "鸳鸯鸡", desc: "全局 3 次，第五/六轮合计 1 次；先绑定合作玩家并公示，双方各 17 兵，收益平分；被绑定者本轮不能用自己的技能。" },
   { id: "paojiao", no: 8, short: "泡椒", name: "泡椒鸡爪", desc: "泡椒偷分前总榜唯一倒一时偷分，后两轮翻倍。" },
   { id: "dapan", no: 9, short: "大盘", name: "大盘鸡", desc: "全局 3 次，第五/六轮合计 1 次；额外 X 兵，未帮助得分兵扣分。" },
   { id: "jiangyou", no: 10, short: "酱油", name: "酱油鸡", desc: "全局 3 次，第五/六轮合计 1 次；提交后等全员提交，查看每名玩家兵力分布，再移动 1 个兵或原地不动。" },
@@ -249,6 +249,9 @@ function renderArmySummary() {
 
 function renderSkillForm(role) {
   if (!role) return `<p class="muted">分配角色后填写技能。</p>`;
+  if (state.room.allianceInvite) {
+    return `<div class="skill-usage bad">你已被 ${escapeHtml(state.room.allianceInvite.partnerName)} 绑定为鸳鸯合作玩家，本轮不能使用自己的技能。</div>`;
+  }
   const players = state.room.players.filter((player) => player.id !== state.playerId);
   const playerOptions = `<option value="">请选择</option>${players.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}`;
   const cityOptions = Array.from({ length: state.room.cityCount }, (_, index) => index + 1).map((city) => `<option value="${city}">${city} 城</option>`).join("");
@@ -278,12 +281,7 @@ function renderSkillForm(role) {
       <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 指定黄焖城池</label>
       <label>黄焖城池<select data-skill="city">${cityOptionsHtml(state.skill.city || 1)}</select></label>
     </div>`;
-  if (role.id === "yuanyang") return `
-    ${usage}
-    <div class="skill-form">
-      <label class="inline"><input type="checkbox" data-skill-check="active" ${checked("active")} /> 本轮合作</label>
-      <label>合作玩家<select data-skill="partnerId">${markSelected(playerOptions, state.skill.partnerId)}</select></label>
-    </div>`;
+  if (role.id === "yuanyang") return renderYuanyangForm(usage, playerOptions);
   if (role.id === "paojiao") return `<label class="inline"><input type="checkbox" data-skill-check="auto" ${state.skill.auto !== false ? "checked" : ""} /> 自动判定泡椒偷分</label>`;
   if (role.id === "dapan") return `
     ${usage}
@@ -325,6 +323,24 @@ function renderNongtangForm(playerOptions) {
     <div class="skill-form">
       <div class="skill-usage ${view.targetSubmitted ? "" : "bad"}">查看对象：${escapeHtml(view.targetName)} · ${status}</div>
       ${view.targetSubmitted ? renderViewedPlacements(view.placements) : ""}
+    </div>
+  `;
+}
+
+function renderYuanyangForm(usage, playerOptions) {
+  const binding = state.room.yuanyangBinding || {};
+  if (binding.partnerId) {
+    return `
+      ${usage}
+      <div class="skill-usage">本轮已绑定 ${escapeHtml(binding.partnerName)}。现在双方各 17 兵，可以商量后再提交投兵。</div>
+    `;
+  }
+  return `
+    ${usage}
+    <div class="skill-form">
+      <label>先绑定合作玩家<select data-skill="partnerId">${markSelected(playerOptions, state.skill.partnerId)}</select></label>
+      <button id="lockYuanyangBtn" class="secondary">锁定合作玩家</button>
+      <p class="muted">锁定后会全场公示，双方本轮各 17 兵；被绑定玩家不能使用自己的技能。</p>
     </div>
   `;
 }
@@ -461,6 +477,7 @@ function handleClick(event) {
   if (id === "dissolveRoomBtn") dissolveRoom();
   if (id === "submitBtn") submitRound();
   if (id === "lockNongtangBtn") lockNongtangTarget();
+  if (id === "lockYuanyangBtn") lockYuanyangPartner();
   if (id === "adjustJiangyouBtn") adjustJiangyou();
   if (event.target.dataset.tab) {
     state.activeTab = event.target.dataset.tab;
@@ -631,10 +648,21 @@ function lockNongtangTarget() {
   });
 }
 
+function lockYuanyangPartner() {
+  if (!state.skill.partnerId) return alert("请选择鸳鸯合作玩家");
+  emit("setYuanyangPartner", { partnerId: state.skill.partnerId }, (res) => {
+    state.room = res.room;
+    state.skill = { ...defaultSkill("yuanyang"), partnerId: state.room.yuanyangBinding ? state.room.yuanyangBinding.partnerId : "" };
+    render();
+  });
+}
+
 function submitRound() {
   const error = validateLocalSubmission();
   if (error) return alert(error);
-  emit("submitRound", { placements: state.placements, skill: state.skill }, (res) => {
+  const me = getMe();
+  const skill = state.room.allianceInvite ? defaultSkill(me ? me.roleId : "") : state.skill;
+  emit("submitRound", { placements: state.placements, skill }, (res) => {
     state.room = res.room;
     syncNongtangTarget();
     render();
@@ -788,7 +816,7 @@ function armyLimit() {
   const me = getMe();
   if (state.room && state.room.allianceInvite) return 17;
   let limit = 12;
-  if (me && me.roleId === "yuanyang" && state.skill.active) limit = 17;
+  if (me && me.roleId === "yuanyang" && state.room && state.room.yuanyangBinding && state.room.yuanyangBinding.partnerId) limit = 17;
   if (me && me.roleId === "dapan" && state.skill.active) limit += Math.min(12, Math.max(0, numberOr(state.skill.extra, 0)));
   return limit;
 }
