@@ -367,6 +367,15 @@ select {
   gap: 10px;
 }
 
+.skill-form label,
+.skill-action {
+  min-width: 0;
+}
+
+.skill-action {
+  width: 100%;
+}
+
 .skill-usage {
   margin-bottom: 10px;
   border-radius: 6px;
@@ -476,5 +485,13 @@ select {
 
   .move-grid {
     grid-template-columns: 1fr;
+  }
+
+  .skill-form {
+    gap: 12px;
+  }
+
+  .skill-action {
+    min-height: 44px;
   }
 }

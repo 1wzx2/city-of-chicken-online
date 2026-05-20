@@ -337,9 +337,9 @@ function renderYuanyangForm(usage, playerOptions) {
   }
   return `
     ${usage}
-    <div class="skill-form">
+    <div class="skill-form yuanyang-form">
       <label>先绑定合作玩家<select data-skill="partnerId">${markSelected(playerOptions, state.skill.partnerId)}</select></label>
-      <button id="lockYuanyangBtn" class="secondary">锁定合作玩家</button>
+      <button id="lockYuanyangBtn" class="secondary skill-action">锁定合作玩家</button>
       <p class="muted">锁定后会全场公示，双方本轮各 17 兵；被绑定玩家不能使用自己的技能。</p>
     </div>
   `;
