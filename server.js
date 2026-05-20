@@ -354,6 +354,7 @@ function publicRoom(room, viewerId) {
     })),
     ownSubmission: roundSubmissions[viewerId] || null,
     skillUsage: publicSkillUsage(room, viewerId),
+    allianceAnnouncement: publicAllianceAnnouncement(room),
     allianceInvite: publicAllianceInvite(room, viewerId),
     nongtangView: publicNongtangView(room, viewerId),
     jiangyouView: publicJiangyouView(room, viewerId),
@@ -382,6 +383,17 @@ function publicAllianceInvite(room, viewerId) {
     partnerId: invite.yuanyangPlayer.id,
     partnerName: invite.yuanyangPlayer.name,
     armyLimit: 17,
+  };
+}
+
+function publicAllianceAnnouncement(room) {
+  const alliance = currentAllianceAnnouncement(room);
+  if (!alliance) return null;
+  return {
+    yuanyangId: alliance.yuanyangPlayer.id,
+    yuanyangName: alliance.yuanyangPlayer.name,
+    partnerId: alliance.partner.id,
+    partnerName: alliance.partner.name,
   };
 }
 
@@ -666,12 +678,20 @@ function armyLimitFor(room, player, skill) {
 }
 
 function currentAllianceInvite(room, viewerId) {
+  const alliance = currentAllianceAnnouncement(room);
+  if (!alliance || alliance.partner.id !== viewerId) return null;
+  return { yuanyangPlayer: alliance.yuanyangPlayer };
+}
+
+function currentAllianceAnnouncement(room) {
   const yuanyangPlayer = room.players.find((player) => player.roleId === "yuanyang");
-  if (!yuanyangPlayer || yuanyangPlayer.id === viewerId) return null;
+  if (!yuanyangPlayer) return null;
   const yuanyangSubmission = (room.submissions[String(room.round)] || {})[yuanyangPlayer.id];
   const skill = yuanyangSubmission ? yuanyangSubmission.skill || {} : {};
-  if (!skill.active || skill.partnerId !== viewerId) return null;
-  return { yuanyangPlayer };
+  if (!skill.active || !skill.partnerId || skill.partnerId === yuanyangPlayer.id) return null;
+  const partner = room.players.find((player) => player.id === skill.partnerId);
+  if (!partner) return null;
+  return { yuanyangPlayer, partner };
 }
 
 function usesLimitedSkill(roleId, skill) {
@@ -970,6 +990,7 @@ function findHighestUnique(entries) {
   });
   const values = [...groups.keys()].map(Number).sort((a, b) => b - a);
   for (const value of values) {
+    if (value <= 0) continue;
     const group = groups.get(String(value));
     if (group.length === 1) return group[0];
   }

@@ -136,6 +136,7 @@ function renderRoom() {
         <p class="muted">第 ${room.round} 轮，${submitted}/${room.players.length} 已提交。本机玩家：${escapeHtml(me ? me.name : "未知")}。</p>
       </section>
       ${isHost ? renderHostPanel() : ""}
+      ${renderAllianceAnnouncement()}
       <section class="panel">
         <h2>玩家</h2>
         <div class="player-list">${room.players.map(renderPlayer).join("")}</div>
@@ -198,6 +199,17 @@ function renderHostPanel() {
         <button id="dissolveRoomBtn" class="secondary danger">解散房间</button>
       </div>
       <p class="muted">重新随机角色会清空本轮提交。结算时未提交玩家按 0 兵处理。</p>
+    </section>
+  `;
+}
+
+function renderAllianceAnnouncement() {
+  const alliance = state.room && state.room.allianceAnnouncement;
+  if (!alliance) return "";
+  return `
+    <section class="panel">
+      <h2>鸳鸯合作</h2>
+      <div class="skill-usage">${escapeHtml(alliance.yuanyangName)} 本轮绑定 ${escapeHtml(alliance.partnerName)}，双方各 17 兵，收益平分。</div>
     </section>
   `;
 }
